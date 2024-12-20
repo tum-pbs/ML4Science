@@ -2,7 +2,7 @@ from unittest import TestCase
 
 from phiml import math
 from phiml.math import spatial, channel, batch, instance, non_instance, non_channel, non_spatial, non_batch
-from phiml.math._shape import shape_stack, vector_add, EMPTY_SHAPE, Shape, dual
+from phiml.math._shape import shape_stack, EMPTY_SHAPE, Shape, dual, resolve_index
 
 
 class ShapedDummy:
@@ -13,27 +13,26 @@ class ShapedDummy:
 class TestShape(TestCase):
 
     def test_dimension_types(self):
-        v = math.ones(batch(batch=10) & spatial(x=4, y=3) & channel(vector=2) & dual(d=1))
+        v = math.ones(batch(batch=10) + dual(d=1) + spatial(x=4, y=3) + channel(vector=2))
         self.assertEqual(v.x.index, 2)
         self.assertEqual(v.x.name, 'x')
-        self.assertEqual(('batch', 'dual', 'spatial', 'spatial', 'channel'), v.shape.types)
+        self.assertEqual(('batch', 'dual', 'spatial', 'spatial', 'channel'), tuple(v.shape.dim_types))
         b = v.x.as_batch()
-        self.assertEqual(('batch', 'dual', 'batch', 'spatial', 'channel'), b.shape.types)
+        self.assertEqual(('batch', 'dual', 'batch', 'spatial', 'channel'), tuple(b.shape.dim_types))
 
     def test_combine(self):
         self.assertEqual(batch(batch=10) & spatial(y=4, x=3) & channel(vector=2), batch(batch=10) & channel(vector=2) & spatial(y=4, x=3))
 
     def test_stack(self):
-        stacked = shape_stack(batch('stack'), batch(time=1) & spatial(x=3, y=3), spatial(x=3, y=4), EMPTY_SHAPE)
+        stacked = shape_stack(batch('stack'), batch(time=1) & spatial(x=3, y=3), spatial(x=3, y=4), EMPTY_SHAPE, stack_dim_first=True)
         print(stacked)
         self.assertEqual(('stack', 'time', 'x', 'y'), stacked.names)
         self.assertEqual(3, stacked.get_size('stack'))
         self.assertEqual(1, stacked.get_size('time'))
         math.assert_close(3, stacked.get_size('x'))
         math.assert_close([3, 4, 1], stacked.get_size('y'))
-        print(stacked.shape)
-        self.assertEqual(('stack', 'dims'), stacked.shape.names)
-        self.assertEqual(12, stacked.shape.volume)
+        self.assertEqual(('stack',), stacked.non_uniform_shape.names)
+        self.assertEqual(3, stacked.non_uniform_shape.size)
         stacked = shape_stack(batch('stack'), channel(vector='x,y') & spatial(x=3, y=3), spatial(x=3, y=4), math.EMPTY_SHAPE)
         self.assertEqual(('x', 'y'), stacked['vector'].item_names[0])
 
@@ -51,26 +50,16 @@ class TestShape(TestCase):
     def test_indexing(self):
         s = batch(batch=10) & spatial(x=4, y=3) & channel(vector=2)
         self.assertEqual(batch(batch=10), s[0:1])
-        self.assertEqual(batch(batch=10), s[[0]])
+        self.assertEqual(batch(batch=10), s[0])
         self.assertEqual(spatial(x=4, y=3), s[1:3])
         self.assertEqual(spatial(x=4), s['x'])
-        self.assertEqual(spatial(x=4, y=3), s['x, y'])
+        self.assertEqual(spatial(x=4, y=3), s.only('x, y', reorder=True))
 
     def test_after_gather(self):
         self.assertEqual(spatial(x=2), spatial(x=3).after_gather({'x': slice(None, None, 2)}))
         self.assertEqual(EMPTY_SHAPE, spatial(x=3).after_gather({'x': 0}))
 
-    def test_vector_add(self):
-        self.assertEqual(vector_add(batch(batch=10) & spatial(x=4, y=3), spatial(x=1, y=-1, z=2)), batch(batch=10) & spatial(x=5, y=2, z=2))
-
     def test_item_names(self):
-        s = spatial(x=4, y=3)
-        named = s.shape
-        self.assertEqual(named.get_item_names('dims'), ('x', 'y'))
-        shape = math.concat_shapes(batch(b=10), named)
-        self.assertEqual(shape.get_item_names('dims'), ('x', 'y'))
-        shape = math.merge_shapes(batch(b=10), named)
-        self.assertEqual(shape.get_item_names('dims'), ('x', 'y'))
         c = channel(vector='r,g,b')
         self.assertEqual(('r', 'g', 'b'), c.get_item_names('vector'))
 
@@ -119,7 +108,7 @@ class TestShape(TestCase):
             self.assertEqual(spatial(obj), s)
             self.assertEqual(instance(obj), i)
             self.assertEqual(channel(obj), c)
-            self.assertEqual(set(non_batch(obj)), set(math.concat_shapes(s, i, c)))
+            self.assertEqual(set(non_batch(obj)), set(s + i + c))
             self.assertEqual(set(non_spatial(obj)), set(math.concat_shapes(b, i, c)))
             self.assertEqual(set(non_instance(obj)), set(math.concat_shapes(b, s, c)))
             self.assertEqual(set(non_channel(obj)), set(math.concat_shapes(b, s, i)))
@@ -165,14 +154,14 @@ class TestShape(TestCase):
 
     def test_resolve_index(self):
         s = spatial(x=4, y=3) & channel(vector='x,y')
-        self.assertEqual({}, s.resolve_index({}))
-        self.assertEqual({'vector': 0}, s.resolve_index({'vector': 'x'}))
-        self.assertEqual({'vector': 1}, s.resolve_index({'vector': 'y'}))
-        self.assertEqual({'vector': [0, 1]}, s.resolve_index({'vector': 'x,y'}))
-        self.assertEqual({'vector': [0, 1]}, s.resolve_index({'vector': [0, 1]}))
-        self.assertEqual({'vector': 0}, s.resolve_index({'vector': 0}))
-        self.assertEqual({'vector': slice(1)}, s.resolve_index({'vector': slice(1)}))
-        self.assertEqual({'vector': slice(0, 0)}, s.resolve_index({'vector': []}))
+        self.assertEqual({}, resolve_index(s, {}))
+        self.assertEqual({'vector': 0}, resolve_index(s, {'vector': 'x'}))
+        self.assertEqual({'vector': 1}, resolve_index(s, {'vector': 'y'}))
+        self.assertEqual({'vector': [0, 1]}, resolve_index(s, {'vector': 'x,y'}))
+        self.assertEqual({'vector': [0, 1]}, resolve_index(s, {'vector': [0, 1]}))
+        self.assertEqual({'vector': 0}, resolve_index(s, {'vector': 0}))
+        self.assertEqual({'vector': slice(1)}, resolve_index(s, {'vector': slice(1)}))
+        self.assertEqual({'vector': slice(0, 0)}, resolve_index(s, {'vector': []}))
 
     def test_auto(self):
         v = math.vec('~vector', 1, 2)
@@ -182,23 +171,10 @@ class TestShape(TestCase):
         v = math.vec('b:b', 0)
         self.assertEqual(batch(b='0,'), v.shape)
 
-    def test_higher_dual(self):
-        s = spatial(x=4, y=3) & channel(vector='x,y') & dual(vector=2)
-        d = s._more_dual()
-        self.assertEqual(d, dual(d))
-        self.assertEqual(d, d.dual)
-        self.assertEqual({'~x', '~y', '~vector', '~~vector'}, set(d.names))
-        p = d._less_dual()
-        self.assertEqual(dual(vector=2), dual(p))
-        self.assertEqual({'x', 'y', 'vector', '~vector'}, set(p.names))
-        pp = s._less_dual()
-        self.assertEqual(spatial(x=4, y=3), pp.spatial)
-        self.assertEqual(math.EMPTY_SHAPE, pp.dual)
-
     def test_only(self):
         s = batch(b=10) & channel(vector='x,y')
         self.assertEqual(batch(b=10), s.only([batch, spatial]))
-        self.assertEqual(s[(1, 0)], s.only([channel, batch], reorder=True))
+        self.assertEqual(('vector', 'b'), s.only([channel, batch], reorder=True).names)
 
     def test_without(self):
         s = batch(b=10) & channel(vector='x,y')
@@ -219,4 +195,17 @@ class TestShape(TestCase):
         self.assertEqual(shape.as_dual(), and_dual[3:])
         dual_and = dual & shape
         self.assertEqual(shape.as_dual(), dual_and.dual)
-        self.assertEqual(shape.as_dual(), dual_and[:3])
+
+    def test_hash(self):
+        s = spatial(x=3, y=2)
+        c = channel(vector='x,y')
+        sc = s + c
+        assert hash(s) == hash(sc[:2])
+        assert hash(c) == hash(sc[2:])
+
+    def test_eq(self):
+        s = spatial(x=3, y=2)
+        c = channel(vector='x,y')
+        sc = s + c
+        assert s == sc[:2]
+        assert c == sc[2:]

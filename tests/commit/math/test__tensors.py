@@ -71,6 +71,7 @@ class TestTensors(TestCase):
                 self.assertEqual(2, tens.shape.get_size('stack'))
                 self.assertEqual(('stack', 'x'), tens.shape.names)
                 tens = math.tensor(ref)
+                print(tens.backend)
                 self.assertEqual(backend, math.choose_backend(tens))
                 self.assertEqual(backend, math.choose_backend(tens.stack[0]))
                 self.assertEqual(backend, math.choose_backend(tens.stack[1]))
@@ -134,7 +135,7 @@ class TestTensors(TestCase):
         tensors = math.unstack(t0, 'vector')
         stacked = math.stack(tensors, channel('vector2'))
         math.assert_close(stacked, t0)
-        self.assertEqual((10, 4, 3, 2), stacked.native(stacked.shape).shape)
+        self.assertEqual((10, 4, 3, 2), stacked.native('batch,x,y,vector2').shape)
         self.assertEqual((4, 3, 2, 10), stacked.native(order=('x', 'y', 'vector2', 'batch')).shape)
         self.assertEqual((2, 10, 3, 4), stacked.native(order=('vector2', 'batch', 'y', 'x')).shape)  # this should re-stack since only the stacked dimension position is different
 
@@ -168,7 +169,7 @@ class TestTensors(TestCase):
         b = math.ones(batch(batch=3))
         c = a + b
         self.assertEqual(c.shape.volume, 12)
-        self.assertEqual(c._native_shape.volume, 1)
+        self.assertEqual(0, len(c._names))
         # Collapsed + Native
         n = math.ones(channel(vector=3)) + (0, 1, 2)
         math.assert_close(n, (1, 2, 3))
@@ -679,7 +680,7 @@ class TestTensors(TestCase):
 
     def test_expand_non_uniform(self):
         size = vec(batch('dataset_size'), 2, 4, 8, 16, 64, 256)
-        b = batch(example=size, seed=64) & size
+        b = batch(example=size, seed=64) & size.shape
         t = math.random_uniform(b)
         curves = vec(dataset_size=size, fraction=t)
         print(curves.shape)

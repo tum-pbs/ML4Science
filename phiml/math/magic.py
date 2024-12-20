@@ -20,7 +20,7 @@ from typing import Tuple, Callable, Union
 
 import dataclasses
 
-from ._shape import Shape, shape, channel, non_batch, batch, spatial, instance, concat_shapes, dual
+from ._shape import Shape, shape, channel, non_batch, batch, spatial, instance, concat_shapes, dual, PureShape, Dim, MixedShape, DEBUG_CHECKS, concat_shapes_, SHAPE_TYPES
 from ..backend._dtype import DType
 
 
@@ -76,12 +76,12 @@ class Shaped(metaclass=_ShapedType):
 
 class _SliceableType(type):
     def __instancecheck__(self, instance):
-        if isinstance(instance, (str, Shape)):
+        if isinstance(instance, (str, Dim, PureShape, MixedShape)):
             return False
         return isinstance(instance, Shaped) and (hasattr(instance, '__getitem__') or isinstance(instance, PhiTreeNode))
 
     def __subclasscheck__(self, subclass):
-        if subclass in (str, Shape):
+        if subclass in (str, Dim, PureShape, MixedShape):
             return False
         return hasattr(subclass, '__getitem__')
 
@@ -246,7 +246,7 @@ class Shapable(metaclass=_ShapableType):
         """
         raise NotImplementedError
 
-    def __pack_dims__(self, dims: Tuple[str, ...], packed_dim: Shape, pos: Union[int, None], **kwargs) -> 'Shapable':
+    def __pack_dims__(self, dims: Shape, packed_dim: Shape, pos: Union[int, None], **kwargs) -> 'Shapable':
         """
         Compresses multiple dimensions into a single dimension by concatenating the elements.
         Elements along the new dimensions are laid out according to the order of `dims`.
@@ -489,7 +489,8 @@ class BoundDim:
             raise AttributeError(f"Object of type {type(obj)} has no shape")
         if name == 'is_tensor_like':
             raise AttributeError(f"Trying to access {type(obj)}.is_tensor_like which does not exist. This is likely a TensorFlow JIT compile check. This name is reserved.")
-        assert isinstance(obj, Sliceable) and isinstance(obj, Shaped), f"Cannot create BoundDim for {type(obj).__name__}. Objects must be Sliceable and Shaped, see https://tum-pbs.github.io/PhiML/phiml/math/magic.html"
+        if DEBUG_CHECKS:
+            assert isinstance(obj, Sliceable) and isinstance(obj, Shaped), f"Cannot create BoundDim for {type(obj).__name__}. Objects must be Sliceable and Shaped, see https://tum-pbs.github.io/PhiML/phiml/math/magic.html"
         self.obj = obj
         self.name = name
 
@@ -744,7 +745,7 @@ class _BoundDims:
             `phiml.math.rename_dims()`
         """
         s = shape(self.obj)
-        new_dims = concat_shapes(*[dim_type(**{dim: s.get_item_names(dim) or s.get_size(dim)}) for dim in self.dims])
+        new_dims = concat_shapes_(*[dim_type(**{dim: s.get_item_names(dim) or s.get_size(dim)}) for dim in self.dims])
         from ._magic_ops import rename_dims
         return rename_dims(self.obj, self.dims, new_dims, **kwargs)
 
@@ -786,7 +787,7 @@ def slicing_dict(obj, item, existing_only=True) -> dict:
     Returns:
         `dict` mapping dimension names to slices.
     """
-    if isinstance(item, Shape):
+    if isinstance(item, SHAPE_TYPES):
         item = item.name_list
     if isinstance(item, dict):
         def valid_key(key):
@@ -794,7 +795,7 @@ def slicing_dict(obj, item, existing_only=True) -> dict:
                 key = key(obj)
             if isinstance(key, str):
                 return key
-            elif isinstance(key, Shape):
+            elif isinstance(key, SHAPE_TYPES):
                 return key.name
             else:
                 raise ValueError(f"Illegal slicing dim: {key}. Only str and single-dim Shape and filters are allowed. While trying to slice {obj} by {item}")

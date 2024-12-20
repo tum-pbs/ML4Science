@@ -12,7 +12,8 @@ from . import _ops as math, all_available, stop_gradient
 from ._magic_ops import stack, slice_, find_differences, rename_dims, all_attributes
 from ._shape import Shape, spatial, instance, batch, channel, merge_shapes, DimFilter, shape, dual
 from ._sparse import SparseCoordinateTensor
-from ._tensors import Tensor, disassemble_tree, assemble_tree, disassemble_tensors, assemble_tensors, variable_attributes, wrap, specs_equal, equality_by_shape_and_value, object_dims
+from ._tensors import Tensor, disassemble_tree, assemble_tree, disassemble_tensors, assemble_tensors, variable_attributes, wrap, specs_equal, equality_by_shape_and_value, \
+    object_dims, backend_for
 from ._trace import ShiftLinTracer, matrix_from_function, LinearTraceInProgress
 from .magic import PhiTreeNode, Shapable
 from ..backend import Backend
@@ -82,9 +83,9 @@ class SignatureKey:
     @staticmethod
     def _extrapolate_shape(shape_: Shape, rec_in: 'SignatureKey', new_in: 'SignatureKey') -> Shape:
         sizes = []
-        for dim, size in shape_._named_sizes:
+        for dim in shape_:
             for p_in, n_in in zip(rec_in.shapes, new_in.shapes):
-                if dim in p_in and size == p_in.get_size(dim):
+                if dim.name in p_in and dim.size == p_in.get_size(dim):
                     sizes.append(n_in.get_size(dim))
                     break
             else:
@@ -137,7 +138,7 @@ def key_from_args(args: tuple,
     tree, tensors = disassemble_tree(kwargs, cache=cache, attr_type=attr_type)
     _, aux_tensors = disassemble_tree(detached_aux_kwargs, cache=cache, attr_type=variable_attributes)
     tracing = not math.all_available(*tensors, *aux_tensors)
-    backend = math.choose_backend_t(*tensors, *aux_tensors)
+    backend = backend_for(*tensors, *aux_tensors)
     natives, shapes, specs = disassemble_tensors(tensors, expand=cache)
     if for_jit and backend.name == 'torch':  # for PyTorch, add tracers from aux to natives, but keep aux. PyTorch does not support using tensors with grad inside jit otherwise.
         _, aux_tensors = disassemble_tree(attached_aux_kwargs, cache=cache, attr_type=variable_attributes)
@@ -976,7 +977,7 @@ Traces can be avoided by jit-compiling the code that calls custom gradient funct
         if tree is None:
             c_shape = complete_shapes.pop(0)
             if incomplete is None:
-                return [None] * c_shape.shape.without('dims').volume
+                return [None] * c_shape.non_uniform_shape.volume
             else:
                 assert isinstance(incomplete, Tensor)
                 return list(incomplete._natives())
@@ -1162,7 +1163,7 @@ def map_types(f: Callable, dims: Union[Shape, tuple, list, str, Callable], dim_t
             originals = t.shape.only(dims)
             new_dims = originals.as_type(dim_type)
             for o, n in zip(originals, new_dims):
-                input_types[n.name] = o.dim_type
+                input_types[n.name] = o.type
             retyped.append(rename_dims(t, originals, new_dims))
         return assemble_tree(tree, retyped), input_types
 

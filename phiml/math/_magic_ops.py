@@ -5,8 +5,9 @@ from functools import partial
 from numbers import Number
 from typing import TypeVar, Tuple, Dict, Union, Optional, Sequence, Any, Callable
 
-from . import channel
-from ._shape import Shape, DimFilter, batch, instance, shape, non_batch, merge_shapes, concat_shapes, spatial, parse_dim_order, dual, auto, parse_shape_spec, DIM_FUNCTIONS, INV_CHAR
+from . import channel, EMPTY_SHAPE
+from ._shape import Shape, DimFilter, batch, instance, shape, non_batch, merge_shapes, concat_shapes, spatial, parse_dim_order, dual, auto, parse_shape_spec, DIM_FUNCTIONS, \
+    INV_CHAR, concat_shapes_, Dim, DEBUG_CHECKS, SHAPE_TYPES
 from .magic import Sliceable, Shaped, Shapable, PhiTreeNode
 from ..backend import choose_backend, NoBackendFound
 from ..backend._dtype import DType
@@ -50,7 +51,7 @@ def slice_(value: PhiTreeNodeType, slices: Union[Dict[str, Union[int, slice, str
         return [slice_(v, slices) for v in value]
     if isinstance(value, dict):
         return {k: slice_(v, slices) for k, v in value.items()}
-    if isinstance(value, Shape):
+    if isinstance(value, SHAPE_TYPES):
         return value.after_gather(slices)
     if value is range:
         from ._tensors import Tensor
@@ -87,22 +88,24 @@ def unstack(value, dim: DimFilter) -> tuple:
         >>> unstack(expand(0, spatial(x=5)), 'x')
         (0.0, 0.0, 0.0, 0.0, 0.0)
     """
-    assert isinstance(value, Sliceable) and isinstance(value, Shaped), f"Cannot unstack {type(value).__name__}. Must be Sliceable and Shaped, see https://tum-pbs.github.io/PhiML/phiml/math/magic.html"
-    dims = shape(value).only(dim)
+    if DEBUG_CHECKS:
+        assert isinstance(value, Sliceable) and isinstance(value, Shaped), f"Cannot unstack {type(value).__name__}. Must be Sliceable and Shaped, see https://tum-pbs.github.io/PhiML/phiml/math/magic.html"
+    dims = shape(value).only(dim, reorder=True)
     if dims.rank == 0:
         return value,
     if dims.rank == 1:
         if hasattr(value, '__unstack__'):
             result = value.__unstack__(dims.names)
             if result is not NotImplemented:
-                assert isinstance(result, tuple), f"__unstack__ must return a tuple but got {type(result)}"
-                assert all([isinstance(item, Sliceable) for item in result]), f"__unstack__ must return a tuple of Sliceable objects but not all items were sliceable in {result}"
+                if DEBUG_CHECKS:
+                    assert isinstance(result, tuple), f"__unstack__ must return a tuple but got {type(result)}"
+                    assert all([isinstance(item, Sliceable) for item in result]), f"__unstack__ must return a tuple of Sliceable objects but not all items were sliceable in {result}"
                 return result
         return tuple([slice_(value, {dims.name: i}) for i in range(dims.size)])
     else:  # multiple dimensions
         if hasattr(value, '__pack_dims__'):
             packed_dim = batch('_unstack')
-            value_packed = value.__pack_dims__(dims.names, packed_dim, pos=None)
+            value_packed = value.__pack_dims__(dims, packed_dim, pos=None)
             if value_packed is not NotImplemented:
                 return unstack(value_packed, packed_dim)
         unstack_dim = _any_uniform_dim(dims)
@@ -162,7 +165,7 @@ def stack(values: Union[Sequence[PhiTreeNodeType], Dict[str, PhiTreeNodeType]], 
     if not dim:
         assert len(values) == 1, f"Only one element can be passed as `values` if no dim is passed but got {values}"
         return next(iter(values.values())) if isinstance(values, dict) else values[0]
-    if not isinstance(dim, Shape):
+    if not isinstance(dim, SHAPE_TYPES):
         dim = auto(dim)
     values_ = tuple(values.values()) if isinstance(values, dict) else values
     if simplify:
@@ -201,7 +204,7 @@ def stack(values: Union[Sequence[PhiTreeNodeType], Dict[str, PhiTreeNodeType]], 
         if dim.size is None:
             dim = dim.with_size(len(values))
         if isinstance(values, dict):
-            dim_item_names = tuple([k.name if isinstance(k, Shape) else k for k in values.keys()])
+            dim_item_names = tuple([k.name if isinstance(k, SHAPE_TYPES) else k for k in values.keys()])
             assert all(isinstance(k, str) for k in dim_item_names), f"dict keys must be of type str but got {dim_item_names}"
             values = tuple(values.values())
             dim = dim.with_size(dim_item_names)
@@ -210,7 +213,8 @@ def stack(values: Union[Sequence[PhiTreeNodeType], Dict[str, PhiTreeNodeType]], 
             if hasattr(v, '__stack__'):
                 result = v.__stack__(values, dim, **kwargs)
                 if result is not NotImplemented:
-                    assert isinstance(result, Shape) if isinstance(v, Shape) else isinstance(result, Shapable), "__stack__ must return a Shapable object"
+                    if DEBUG_CHECKS:
+                        assert isinstance(result, SHAPE_TYPES) if isinstance(v, SHAPE_TYPES) else isinstance(result, Shapable), "__stack__ must return a Shapable object"
                     return result
         # --- Next: try stacking attributes for tree nodes ---
         if any(dataclasses.is_dataclass(v) for v in values):
@@ -279,7 +283,7 @@ def stack(values: Union[Sequence[PhiTreeNodeType], Dict[str, PhiTreeNodeType]], 
         return values[0]
 
 
-def concat(values: Sequence[PhiTreeNodeType], dim: Union[str, Shape], /, expand_values=False, **kwargs) -> PhiTreeNodeType:
+def concat(values: Sequence[PhiTreeNodeType], dim: Union[str, Shape], expand_values=False, **kwargs) -> PhiTreeNodeType:
     """
     Concatenates a sequence of `phiml.math.magic.Shapable` objects, e.g. `Tensor`, along one dimension.
     All values must have the same spatial, instance and channel dimensions and their sizes must be equal, except for `dim`.
@@ -309,7 +313,7 @@ def concat(values: Sequence[PhiTreeNodeType], dim: Union[str, Shape], /, expand_
         (x=1.000, y=0.000, z=2.000) float64
     """
     assert len(values) > 0, f"concat() got empty sequence {values}"
-    if isinstance(dim, Shape):
+    if isinstance(dim, SHAPE_TYPES):
         dim = dim.name
     assert isinstance(dim, str), f"dim must be a str or Shape but got '{dim}' of type {type(dim)}"
     if '->' in dim:
@@ -472,12 +476,12 @@ def expand(value, *dims: Union[Shape, str], **kwargs):
     """
     if not dims:
         return value
-    dims = concat_shapes(*[d if isinstance(d, Shape) else parse_shape_spec(d) for d in dims])
+    dims = concat_shapes_(*[d if isinstance(d, SHAPE_TYPES) else parse_shape_spec(d) for d in dims])
     combined = merge_shapes(value, dims)  # check that existing sizes match
     if not dims.without(shape(value)):  # no new dims to add
         if set(dims) == set(shape(value).only(dims)):  # sizes and item names might differ, though
             return value
-    dims &= combined.shape.without('dims')  # add missing non-uniform dims
+    dims &= combined.non_uniform_shape  # add missing non-uniform dims
     # --- First try __expand__
     if hasattr(value, '__expand__'):
         result = value.__expand__(dims, **kwargs)
@@ -546,40 +550,70 @@ def rename_dims(value: PhiTreeNodeType,
     Returns:
         Same type as `value`.
     """
-    if isinstance(value, Shape):
-        return value._replace_names_and_types(dims, names)
+    if isinstance(value, SHAPE_TYPES):
+        old_dims, new_dims = _shape_replace(value, dims, names)
+        return value.replace(old_dims, new_dims)
     elif isinstance(value, (Number, bool)):
         return value
-    assert isinstance(value, Shapable) and isinstance(value, Shaped), f"value must be a Shape or Shapable but got {type(value).__name__}"
-    dims = shape(value).only(dims).names if callable(dims) else parse_dim_order(dims)
-    existing_dims = shape(value).only(dims, reorder=True)
-    if isinstance(names, str) and names.startswith('(') and names.endswith(')'):
-        item_names = [s.strip() for s in names[1:-1].split(',')]
-        names = [shape(value)[d].with_size(item_names) for d in dims]
-    elif isinstance(names, str):
-        names = parse_dim_order(names)
-    elif callable(names):
-        names = names(**existing_dims.untyped_dict)
-        dims = existing_dims
-    assert len(dims) == len(names), f"names and dims must be of equal length but got #dims={len(dims)} and #names={len(names)}"
-    if not existing_dims:
+    if DEBUG_CHECKS:
+        assert isinstance(value, Shapable) and isinstance(value, Shaped), f"value must be a Shape or Shapable but got {type(value).__name__}"
+    old_dims, new_dims = _shape_replace(shape(value), dims, names)
+    if not new_dims:
         return value
-    existing_names = [n for i, n in enumerate(names) if dims[i] in existing_dims]
-    existing_names = existing_dims._replace_names_and_types(existing_dims, existing_names)
     # --- First try __replace_dims__ ---
     if hasattr(value, '__replace_dims__'):
-        result = value.__replace_dims__(existing_dims.names, existing_names, **kwargs)
+        result = value.__replace_dims__(old_dims.names, new_dims, **kwargs)
         if result is not NotImplemented:
             return result
     # --- Next try Tree Node ---
     if isinstance(value, PhiTreeNode):
-        return tree_map(rename_dims, value, all_attributes, treat_layout_as_leaf=True, dims=existing_dims, names=existing_names, **kwargs)
+        return tree_map(rename_dims, value, all_attributes, treat_layout_as_leaf=True, dims=old_dims, names=new_dims, **kwargs)
     # --- Fallback: unstack and stack ---
-    if shape(value).only(existing_dims).volume > 8:
-        warnings.warn(f"rename_dims() default implementation is slow on large dimensions ({existing_dims}). Please implement __replace_dims__() for {type(value).__name__} as defined in phiml.math.magic", RuntimeWarning, stacklevel=2)
-    for old_name, new_dim in zip(existing_dims.names, existing_names):
+    if shape(value).only(old_dims).volume > 8:
+        warnings.warn(f"rename_dims() default implementation is slow on large dimensions ({old_dims}). Please implement __replace_dims__() for {type(value).__name__} as defined in phiml.math.magic", RuntimeWarning, stacklevel=2)
+    for old_name, new_dim in zip(old_dims.names, new_dims):
         value = stack(unstack(value, old_name), new_dim, **kwargs)
     return value
+
+
+def _shape_replace(shape: Shape, dims: DimFilter, new: DimFilter) -> Tuple[Shape, Shape]:  # _replace_names_and_types
+    if callable(dims):
+        existing = dims(shape)
+    elif isinstance(dims, SHAPE_TYPES):
+        existing = dims.only(shape)
+    else:
+        dims = parse_dim_order(dims)
+        existing = shape.only(dims, reorder=True)
+    if not existing:
+        return EMPTY_SHAPE, EMPTY_SHAPE
+    if isinstance(new, str) and new.startswith('(') and new.endswith(')'):
+        item_names = [s.strip() for s in new[1:-1].split(',')]
+        new = concat_shapes_(*[d.with_size(item_names) for d in existing])
+    elif isinstance(new, str):
+        new = parse_dim_order(new)
+        assert len(new) == len(existing), f"Number of names {new} does not match dims to replace {existing}"
+        new = concat_shapes_(*[Dim(n, dim.size, dim.dim_type, dim.slice_names) for dim, n in zip(existing, new)])
+    elif callable(new):
+        new = new(**existing.untyped_dict)
+        assert len(existing) == len(new), f"Number of names {new} does not match dims to replace {dims}"
+    elif isinstance(new, (tuple, list)):
+        assert len(new) == len(existing), f"Number of names {new} does not match dims to replace {dims}"
+        new_dims = []
+        for dim, n in zip(existing, new):
+            if isinstance(n, str):
+                new_dims.append(Dim(n, dim.size, dim.dim_type, dim.slice_names))
+            elif isinstance(n, Shape):
+                new_dims.append(n.with_size(dim.slice_names or dim.size))
+            else:
+                raise ValueError(f"Invalid item in names: {n}")
+        new = concat_shapes_(*new_dims)
+    elif isinstance(new, Shape):
+        if not new.well_defined:
+            new = new.with_sizes(existing.sizes)
+    else:
+        raise ValueError(new)
+    return existing, new
+
 
 
 def b2i(value: PhiTreeNodeType) -> PhiTreeNodeType:
@@ -655,7 +689,8 @@ def pack_dims(value, dims: DimFilter, packed_dim: Union[Shape, str], pos: Option
     """
     if isinstance(value, (Number, bool)):
         return value
-    assert isinstance(value, Shapable) and isinstance(value, Sliceable) and isinstance(value, Shaped), f"value must be Shapable but got {type(value)}"
+    if DEBUG_CHECKS:
+        assert isinstance(value, Shapable) and isinstance(value, Sliceable) and isinstance(value, Shaped), f"value must be Shapable but got {type(value)}"
     packed_dim = auto(packed_dim, dims if callable(dims) else None) if isinstance(packed_dim, str) else packed_dim
     dims = shape(value).only(dims, reorder=True)
     if packed_dim in shape(value):
@@ -668,7 +703,7 @@ def pack_dims(value, dims: DimFilter, packed_dim: Union[Shape, str], pos: Option
         return unpack_dim(value, dims, packed_dim, **kwargs)
     # --- First try __pack_dims__ ---
     if hasattr(value, '__pack_dims__'):
-        result = value.__pack_dims__(dims.names, packed_dim, pos, **kwargs)
+        result = value.__pack_dims__(dims, packed_dim, pos, **kwargs)
         if result is not NotImplemented:
             return result
     # --- Next try Tree Node ---
@@ -733,13 +768,14 @@ def unpack_dim(value, dim: DimFilter, *unpacked_dims: Union[Shape, Sequence[Shap
         return unflatten_unpack(value, dim, unpacked_dims[0])
     if isinstance(value, (Number, bool)):
         return value
-    assert isinstance(value, Shapable) and isinstance(value, Sliceable) and isinstance(value, Shaped), f"value must be Shapable but got {type(value)}"
+    if DEBUG_CHECKS:
+        assert isinstance(value, Shapable) and isinstance(value, Sliceable) and isinstance(value, Shaped), f"value must be Shapable but got {type(value)}"
     dim = shape(value).only(dim)
     if dim.is_empty:
         return value  # Nothing to do, maybe expand?
     assert dim.rank == 1, f"unpack_dim requires as single dimension to be unpacked but got {dim}"
     dim = dim.name
-    unpacked_dims = concat_shapes(*unpacked_dims)
+    unpacked_dims = concat_shapes_(*unpacked_dims)
     if unpacked_dims.rank == 0:
         return value[{dim: 0}]  # remove dim
     elif unpacked_dims.rank == 1:
@@ -784,7 +820,7 @@ def flatten(value, flat_dim: Shape = instance('flat'), flatten_batch=False, **kw
         >>> flatten(math.zeros(spatial(x=4, y=3)))
         (flatⁱ=12) const 0.0
     """
-    assert isinstance(flat_dim, Shape) and flat_dim.rank == 1, flat_dim
+    assert isinstance(flat_dim, SHAPE_TYPES) and flat_dim.rank == 1, flat_dim
     if not isinstance(value, Shaped):
         return value
     if shape(value).is_empty:

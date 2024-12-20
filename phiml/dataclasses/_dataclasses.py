@@ -8,6 +8,7 @@ from typing import TypeVar, Callable, Tuple, List, Set, Iterable, Optional, get_
 from phiml.dataclasses._dep import get_unchanged_cache
 from phiml.math import DimFilter, shape, Shape
 from phiml.math._magic_ops import slice_, variable_attributes
+from phiml.math._shape import SHAPE_TYPES
 from phiml.math._tensors import disassemble_tree, Tensor, assemble_tree, equality_by_shape_and_value, equality_by_ref
 from phiml.math.magic import slicing_dict, BoundDim
 
@@ -246,7 +247,7 @@ def getitem(obj: PhiMLDataclass, item, keepdims: DimFilter = None) -> PhiMLDatac
     cls = type(obj)
     new_obj = cls.__new__(cls, **kwargs)
     new_obj.__init__(**kwargs)
-    cache = {k: slice_(v, item) for k, v in obj.__dict__.items() if isinstance(getattr(type(obj), k, None), cached_property) and not isinstance(v, Shape)}
+    cache = {k: slice_(v, item) for k, v in obj.__dict__.items() if isinstance(getattr(type(obj), k, None), cached_property) and not isinstance(v, SHAPE_TYPES)}
     new_obj.__dict__.update(cache)
     return new_obj
 

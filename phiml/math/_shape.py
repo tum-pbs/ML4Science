@@ -1,7 +1,10 @@
 import re
+import sys
 import warnings
+from dataclasses import dataclass, replace
+from functools import cached_property
 from numbers import Number
-from typing import Tuple, Callable, List, Union, Any, Sequence, Optional, Dict
+from typing import Tuple, Callable, List, Union, Any, Sequence, Optional, Dict, Protocol, runtime_checkable, Iterable
 
 from .. import math
 
@@ -9,28 +12,17 @@ from .. import math
 BATCH_DIM = 'batch'
 SPATIAL_DIM = 'spatial'
 CHANNEL_DIM = 'channel'
-INSTANCE_DIM = 'înstance'
+INSTANCE_DIM = 'instance'
 DUAL_DIM = 'dual'
+DIM_TYPES = (BATCH_DIM, DUAL_DIM, INSTANCE_DIM, SPATIAL_DIM, CHANNEL_DIM)
+TYPE_INDEX = {t: i for i, t in enumerate(DIM_TYPES)}
+PRIMAL_TYPES = {INSTANCE_DIM, SPATIAL_DIM, CHANNEL_DIM}
 
 SUPERSCRIPT = {SPATIAL_DIM: "ˢ", CHANNEL_DIM: "ᶜ", INSTANCE_DIM: "ⁱ", BATCH_DIM: "ᵇ", DUAL_DIM: "ᵈ", None: "⁻"}  # ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ
 CHAR = {SPATIAL_DIM: "s", CHANNEL_DIM: "c", INSTANCE_DIM: "i", BATCH_DIM: "b", DUAL_DIM: "d", None: "-"}  # ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ
 INV_CHAR = {v: k for k, v in CHAR.items()}
 
 DEBUG_CHECKS = []
-
-DimFilter = Union[str, Sequence, set, 'Shape', Callable, None]
-try:
-    DimFilter.__doc__ = """Dimension filters can be used with `Shape.only()` and `Shype.without()`, making them the standard tool for specifying sets of dimensions.
-
-    The following types can be used as dimension filters:
-
-    * `Shape` instances
-    * `tuple` or `list` objects containing dimension names as `str`
-    * Single `str` listing comma-separated dimension names
-    * Any function `filter(Shape) -> Shape`, such as `math.batch()`, `math.non_batch()`, `math.spatial()`, etc.
-    """  # docstring must be set explicitly
-except AttributeError:  # on older Python versions, this is not possible
-    pass
 
 
 def enable_debug_checks():
@@ -41,132 +33,76 @@ def enable_debug_checks():
     DEBUG_CHECKS.append(True)
 
 
-class Shape:
-    """
-    Shapes enumerate dimensions, each consisting of a name, size and type.
+class ShapeMeta(type(Protocol)):
 
-    There are five types of dimensions: `batch`, `dual`, `spatial`, `channel`, and `instance`.
-    """
+    def __instancecheck__(self, obj):
+        return isinstance(obj, (Dim, PureShape, MixedShape))
 
-    def __init__(self, sizes: tuple, names: tuple, types: tuple, item_names: tuple):
-        """
-        To construct a `Shape`, use `batch`, `dual`, `spatial`, `channel` or `instance`, depending on the desired dimension type.
-        To create a shape with multiple types, use `merge_shapes()`, `concat_shapes()` or the syntax `shape1 & shape2`.
+    def __subclasscheck__(self, subclass):
+        return subclass in {Dim, PureShape, MixedShape}
 
-        The `__init__` constructor is for internal use only.
-        """
-        if len(sizes) > 0 and any(s is not None and not isinstance(s, int) for s in sizes):
-            from ._tensors import Tensor
-            sizes = tuple([s if isinstance(s, Tensor) or s is None else int(s) for s in sizes])  # TODO replace this by an assert
-        self.sizes: tuple = sizes
-        """
-        Ordered dimension sizes as `tuple`.
-        The size of a dimension can be an `int` or a `Tensor` for [non-uniform shapes](https://tum-pbs.github.io/PhiML/Non_Uniform.html).
-        
-        See Also:
-            `Shape.get_size()`, `Shape.size`, `Shape.shape`.
-        """
-        self.names: Tuple[str, ...] = names
+
+@runtime_checkable
+class Shape(Protocol, metaclass=ShapeMeta):
+
+    @property
+    def names(self) -> Sequence[str]:
         """
         Ordered dimension names as `tuple[str]`.
-        
+
         See Also:
             `Shape.name`.
         """
-        self.types: Tuple[str, ...] = types  # undocumented, may be private
-        self.item_names: Tuple[Optional[Tuple[str, ...]], ...] = (None,) * len(sizes) if item_names is None else item_names  # undocumented
-        if DEBUG_CHECKS:
-            assert len(sizes) == len(names) == len(types) == len(item_names), f"sizes={sizes}, names={names}, types={types}, item_names={item_names}"
-            assert len(set(names)) == len(names), f"Duplicate dimension names: {names}"
-            assert all(isinstance(n, str) for n in names), f"All names must be of type string but got {names}"
-            assert isinstance(self.item_names, tuple)
-            assert all([items is None or isinstance(items, tuple) for items in self.item_names])
-            assert all([items is None or all([isinstance(n, str) for n in items]) for items in self.item_names])
-            from ._tensors import Tensor
-            for name, size in zip(names, sizes):
-                if isinstance(size, Tensor):
-                    assert size.rank > 0
-            for name, size, item_names in zip(self.names, self.sizes, self.item_names):
-                if item_names is not None:
-                    try:
-                        int(size)
-                    except Exception:
-                        raise AssertionError(f"When item names are present, the size must be an integer type")
-                    assert len(item_names) == size, f"Number of item names ({len(item_names)}) does not match size {size}"
-                    for item_name in item_names:
-                        assert item_name, f"Empty item name"
-                    assert len(set(item_names)) == len(item_names), f"Duplicate item names in shape {self} at dim '{name}': {item_names}"
-            for name, type in zip(names, types):
-                if type == DUAL_DIM:
-                    assert name.startswith('~'), f"Dual dimensions must start with '~' but got '{name}' in {self}"
-
-    def _check_is_valid_tensor_shape(self):
-        if DEBUG_CHECKS:
-            from ._tensors import Tensor
-            for name, size in zip(self.names, self.sizes):
-                if size is not None and isinstance(size, Tensor):
-                    assert size.rank > 0
-                    for dim in size.shape.names:
-                        assert dim in self.names, f"Dimension {name} varies along {dim} but {dim} is not part of the Shape {self}"
-
-    def _to_dict(self, include_sizes=True):
-        result = dict(names=self.names, types=self.types, item_names=self.item_names)
-        if include_sizes:
-            if not all([isinstance(s, int)] for s in self.sizes):
-                raise NotImplementedError()
-            result['sizes'] = self.sizes
-        return result
-
-    @staticmethod
-    def _from_dict(dict_: dict):
-        names = tuple(dict_['names'])
-        sizes = list(dict_['sizes']) if 'sizes' in dict_ else [None] * len(names)
-        item_names = tuple([None if n is None else tuple(n) for n in dict_['item_names']])
-        for i, n in enumerate(item_names):
-            if n and sizes[i] is None:
-                sizes[i] = len(n)
-        return Shape(tuple(sizes), names, tuple(dict_['types']), item_names)
+        ...
 
     @property
-    def name_list(self):
-        return list(self.names)
+    def sizes(self) -> Sequence:
+        """
+        Ordered dimension sizes as `tuple`.
+        The size of a dimension can be an `int` or a `Tensor` for [non-uniform shapes](https://tum-pbs.github.io/PhiML/Non_Uniform.html).
+
+        See Also:
+            `Shape.get_size()`, `Shape.size`, `Shape.shape`.
+        """
+        ...
 
     @property
-    def _named_sizes(self):
-        return zip(self.names, self.sizes)
+    def types(self) -> Sequence[Callable]:
+        ...
 
     @property
-    def _dimensions(self):
-        return zip(self.sizes, self.names, self.types, self.item_names)
+    def dim_types(self) -> Sequence[str]:
+        ...
 
     @property
-    def untyped_dict(self):
+    def item_names(self) -> Sequence[Optional[Sequence[str]]]:
+        ...
+
+    @property
+    def name_list(self) -> List[str]:
+        ...
+
+    @property
+    def untyped_dict(self) -> dict:
         """
         Returns:
             `dict` containing dimension names as keys.
                 The values are either the item names as `tuple` if available, otherwise the size.
         """
-        return {name: self.get_item_names(i) or self.get_size(i) for i, name in enumerate(self.names)}
+        ...
 
     def __len__(self):
-        return len(self.sizes)
+        ...
 
     def __contains__(self, item):
-        if isinstance(item, (str, tuple, list)):
-            dims = parse_dim_order(item)
-            return all(dim in self.names for dim in dims)
-        elif isinstance(item, Shape):
-            return all([d in self.names for d in item.names])
-        else:
-            raise ValueError(item)
+        ...
 
     def isdisjoint(self, other: Union['Shape', tuple, list, str]):
         """ Shapes are disjoint if all dimension names of one shape do not occur in the other shape. """
-        other = parse_dim_order(other)
-        return not any(dim in self.names for dim in other)
+        ...
 
     def __iter__(self):
-        return iter(self[i] for i in range(self.rank))
+        ...
 
     def index(self, dim: Union[str, 'Shape', None]) -> int:
         """
@@ -181,19 +117,9 @@ class Shape:
         Returns:
             Index as `int`.
         """
-        if dim is None:
-            return None
-        elif isinstance(dim, str):
-            if dim not in self.names:
-                raise ValueError(f"Shape {self} has no dimension '{dim}'")
-            return self.names.index(dim)
-        elif isinstance(dim, Shape):
-            assert dim.rank == 1, f"index() requires a single dimension as input but got {dim}. Use indices() for multiple dimensions."
-            return self.names.index(dim.name)
-        else:
-            raise ValueError(f"index() requires a single dimension as input but got {dim}")
+        ...
 
-    def indices(self, dims: Union[tuple, list, 'Shape']) -> Tuple[int]:
+    def indices(self, names: Sequence[str]) -> Tuple[int, ...]:
         """
         Finds the indices of the given dimensions within this `Shape`.
 
@@ -201,22 +127,15 @@ class Shape:
             `Shape.index()`.
 
         Args:
-            dims: Sequence of dimensions as `tuple`, `list` or `Shape`.
+            names: Sequence of dim names as `tuple` or `list`. No name can occur in `names` more than once.
 
         Returns:
             Indices as `tuple[int]`.
         """
-        if isinstance(dims, (list, tuple, set)):
-            return tuple([self.index(n) for n in dims if n in self.names])
-        elif isinstance(dims, Shape):
-            return tuple([self.index(n) for n in dims.names if n in self.names])
-        else:
-            raise ValueError(f"indices() requires a sequence of dimensions but got {dims}")
+        ...
 
     def get_size(self, dim: Union[str, 'Shape', int], default=None):
         """
-        See Also:
-            `Shape.get_sizes()`, `Shape.size`
 
         Args:
             dim: Dimension, either as name `str` or single-dimension `Shape` or index `int`.
@@ -225,47 +144,9 @@ class Shape:
         Returns:
             Size associated with `dim` as `int` or `Tensor`.
         """
-        if isinstance(dim, int):
-            assert default is None, "Cannot use a default value when passing an int for dim"
-            return self.sizes[dim]
-        if isinstance(dim, Shape):
-            assert dim.rank == 1, f"get_size() requires a single dimension but got {dim}. Use indices() to get multiple sizes."
-            dim = dim.name
-        if isinstance(dim, str):
-            if dim not in self.names:
-                if default is None:
-                    raise KeyError(f"get_size() failed because '{dim}' is not part of Shape {self} and no default value was provided")
-                else:
-                    return default
-            return self.sizes[self.names.index(dim)]
-        else:
-            raise ValueError(f"get_size() requires a single dim name but got {dim}. Use indices() to get multiple sizes.")
+        ...
 
-    def get_sizes(self, dims: Union[tuple, list, 'Shape']) -> tuple:
-        """
-        See Also:
-            `Shape.get_size()`
-
-        Args:
-            dims: Dimensions as `tuple`, `list` or `Shape`.
-
-        Returns:
-            `tuple`
-        """
-        assert isinstance(dims, (tuple, list, Shape)), f"get_sizes() requires a sequence of dimensions but got {dims}"
-        return tuple([self.get_size(dim) for dim in dims])
-
-    def get_type(self, dim: Union[str, 'Shape']) -> str:
-        # undocumented, use get_dim_type() instead.
-        if isinstance(dim, str):
-            return self.types[self.names.index(dim)]
-        elif isinstance(dim, Shape):
-            assert dim.rank == 1, f"Shape.get_type() only accepts single-dimension Shapes but got {dim}"
-            return self.types[self.names.index(dim.name)]
-        else:
-            raise ValueError(dim)
-
-    def get_dim_type(self, dim: Union[str, 'Shape']) -> Callable:
+    def get_dim_type(self, dim: str) -> str:
         """
         Args:
             dim: Dimension, either as name `str` or single-dimension `Shape`.
@@ -273,16 +154,7 @@ class Shape:
         Returns:
             Dimension type, one of `batch`, `spatial`, `instance`, `channel`.
         """
-        return DIM_FUNCTIONS[self.get_type(dim)]
-
-    def get_types(self, dims: Union[tuple, list, 'Shape']) -> tuple:
-        # undocumented, do not use
-        if isinstance(dims, (tuple, list)):
-            return tuple(self.get_type(n) for n in dims)
-        elif isinstance(dims, Shape):
-            return tuple(self.get_type(n) for n in dims.names)
-        else:
-            raise ValueError(dims)
+        ...
 
     def get_item_names(self, dim: Union[str, 'Shape', int], fallback_spatial=False) -> Union[tuple, None]:
         """
@@ -293,52 +165,17 @@ class Shape:
         Returns:
             Item names as `tuple` or `None` if not defined.
         """
-        if isinstance(dim, int):
-            result = self.item_names[dim]
-        elif isinstance(dim, str):
-            result = self.item_names[self.index(dim)]
-        elif isinstance(dim, Shape):
-            assert dim.rank == 1, f"Shape.get_type() only accepts single-dimension Shapes but got {dim}"
-            result = self.item_names[self.names.index(dim.name)]
-        else:
-            raise ValueError(dim)
-        if result is not None:
-            return result
-        elif fallback_spatial and self.spatial_rank == self.get_size(dim) and self.get_type(dim) == CHANNEL_DIM:
-            return self.spatial.names
-        else:
-            return None
+        ...
 
     def flipped(self, dims: Union[List[str], Tuple[str]]):
-        item_names = list(self.item_names)
-        for dim in dims:
-            if dim in self.names:
-                dim_i_n = self.get_item_names(dim)
-                if dim_i_n is not None:
-                    item_names[self.index(dim)] = tuple(reversed(dim_i_n))
-        return Shape(self.sizes, self.names, self.types, tuple(item_names))
+        ...
 
     def __getitem__(self, selection):
-        if isinstance(selection, int):
-            return Shape((self.sizes[selection],), (self.names[selection],), (self.types[selection],), (self.item_names[selection],))
-        elif isinstance(selection, slice):
-            return Shape(self.sizes[selection], self.names[selection], self.types[selection], self.item_names[selection])
-        elif isinstance(selection, str):
-            if ',' in selection:
-                selection = [self.index(s.strip()) for s in selection.split(',')]
-            else:
-                selection = self.index(selection)
-            return self[selection]
-        elif isinstance(selection, Shape):
-            selection = selection.names
-        if isinstance(selection, (tuple, list)):
-            selection = [self.index(s) if isinstance(s, str) else s for s in selection]
-            return Shape(tuple([self.sizes[i] for i in selection]), tuple([self.names[i] for i in selection]), tuple([self.types[i] for i in selection]), tuple([self.item_names[i] for i in selection]))
-        raise AssertionError("Can only access shape elements as shape[int], shape[str], shape[slice], shape[Sequence] or shape[Shape]")
+        ...
 
     @property
     def reversed(self):
-        return Shape(tuple(reversed(self.sizes)), tuple(reversed(self.names)), tuple(reversed(self.types)), tuple(reversed(self.item_names)))
+        return ...
 
     @property
     def batch(self) -> 'Shape':
@@ -351,7 +188,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, t in enumerate(self.types) if t == BATCH_DIM]]
+        ...
 
     @property
     def non_batch(self) -> 'Shape':
@@ -364,7 +201,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, t in enumerate(self.types) if t != BATCH_DIM]]
+        ...
 
     @property
     def spatial(self) -> 'Shape':
@@ -377,7 +214,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, t in enumerate(self.types) if t == SPATIAL_DIM]]
+        ...
 
     @property
     def non_spatial(self) -> 'Shape':
@@ -390,7 +227,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, t in enumerate(self.types) if t != SPATIAL_DIM]]
+        ...
 
     @property
     def instance(self) -> 'Shape':
@@ -403,7 +240,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, t in enumerate(self.types) if t == INSTANCE_DIM]]
+        ...
 
     @property
     def non_instance(self) -> 'Shape':
@@ -416,7 +253,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, t in enumerate(self.types) if t != INSTANCE_DIM]]
+        ...
 
     @property
     def channel(self) -> 'Shape':
@@ -429,7 +266,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, t in enumerate(self.types) if t == CHANNEL_DIM]]
+        ...
 
     @property
     def non_channel(self) -> 'Shape':
@@ -442,7 +279,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, t in enumerate(self.types) if t != CHANNEL_DIM]]
+        ...
 
     @property
     def dual(self) -> 'Shape':
@@ -455,7 +292,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, t in enumerate(self.types) if t == DUAL_DIM]]
+        ...
 
     @property
     def non_dual(self) -> 'Shape':
@@ -468,7 +305,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, t in enumerate(self.types) if t != DUAL_DIM]]
+        ...
 
     @property
     def primal(self) -> 'Shape':
@@ -481,7 +318,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, t in enumerate(self.types) if t not in [DUAL_DIM, BATCH_DIM]]]
+        ...
 
     @property
     def non_primal(self) -> 'Shape':
@@ -494,30 +331,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, t in enumerate(self.types) if t in [DUAL_DIM, BATCH_DIM]]]
-
-    @property
-    def transposed(self):
-        if self.channel_rank > 0:
-            replacement = {DUAL_DIM: CHANNEL_DIM, CHANNEL_DIM: DUAL_DIM}
-        elif self.instance_rank > 0:
-            replacement = {DUAL_DIM: INSTANCE_DIM, INSTANCE_DIM: DUAL_DIM}
-        elif self.spatial_rank > 0:
-            replacement = {DUAL_DIM: SPATIAL_DIM, SPATIAL_DIM: DUAL_DIM}
-        elif self.dual_rank > 0:
-            warnings.warn(f"Transposing {self} is ill-defined because there are not primal dims. Replacing dual dims by channel dims.", SyntaxWarning)
-            replacement = {DUAL_DIM: CHANNEL_DIM}
-        else:
-            raise ValueError(f"Cannot transpose shape {self} as it has no channel or instance or spatial dims.")
-        return self._with_types(tuple([replacement.get(t, t) for t in self.types]))
-
-    def transpose(self, dims: DimFilter):
-        if callable(dims) and dims in TYPE_BY_FUNCTION:
-            dims = TYPE_BY_FUNCTION[dims]
-            replacement = {DUAL_DIM: dims, dims: DUAL_DIM}
-            return self._with_types(tuple([replacement.get(t, t) for t in self.types]))
-        dims = self.only(dims)
-        return self.replace(dims, dims.transposed)
+        ...
 
     @property
     def non_singleton(self) -> 'Shape':
@@ -528,7 +342,7 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, s in enumerate(self.sizes) if not _size_equal(s, 1)]]
+        ...
 
     @property
     def singleton(self) -> 'Shape':
@@ -539,86 +353,31 @@ class Shape:
         Returns:
             New `Shape` object
         """
-        return self[[i for i, s in enumerate(self.sizes) if _size_equal(s, 1)]]
-
-    def assert_all_sizes_defined(self):
-        """
-        Filters this shape, returning only singleton dimensions as a new `Shape` object.
-        Dimensions are singleton if their size is exactly `1`.
-
-        Returns:
-            New `Shape` object
-        """
-        for n, s in zip(self.names, self.sizes):
-            assert s is not None, f"All sizes must be defined but dim '{n}' is undefined in shape {self}"
+        ...
 
     def as_channel(self):
         """Returns a copy of this `Shape` with all dimensions of type *channel*."""
-        return channel(**self.untyped_dict)
+        ...
 
     def as_batch(self):
         """Returns a copy of this `Shape` with all dimensions of type *batch*."""
-        return batch(**self.untyped_dict)
+        ...
 
     def as_spatial(self):
         """Returns a copy of this `Shape` with all dimensions of type *spatial*."""
-        return spatial(**self.untyped_dict)
+        ...
 
     def as_instance(self):
         """Returns a copy of this `Shape` with all dimensions of type *instance*."""
-        return instance(**self.untyped_dict)
+        ...
 
     def as_dual(self):
         """Returns a copy of this `Shape` with all dimensions of type *dual*."""
-        return dual(**self.untyped_dict)
+        ...
 
     def as_type(self, new_type: Callable):
         """Returns a copy of this `Shape` with all dimensions of the given type, either `batch`, `dual`, `spatial`, `instance`, or `channel` ."""
-        return new_type(**self.untyped_dict)
-
-    def _more_dual(self):
-        return Shape(self.sizes, tuple('~' + n for n in self.names), (DUAL_DIM,) * len(self.names), self.item_names)
-
-    def _less_dual(self, default_type='unknown_primal'):
-        names = tuple(n[1:] if n.startswith('~') else n for n in self.names)
-        types = [t if t != DUAL_DIM else (DUAL_DIM if n.startswith('~~') else default_type) for n, t in zip(self.names, self.types)]
-        return Shape(self.sizes, names, tuple(types), self.item_names)
-
-    def unstack(self, dim='dims') -> Tuple['Shape']:
-        """
-        Slices this `Shape` along a dimension.
-        The dimension listing the sizes of the shape is referred to as `'dims'`.
-
-        Non-uniform tensor shapes may be unstacked along other dimensions as well, see
-        https://tum-pbs.github.io/PhiML/Non_Uniform.html
-
-        Args:
-            dim: dimension to unstack
-
-        Returns:
-            slices of this shape
-        """
-        if dim == 'dims':
-            return tuple(Shape((self.sizes[i],), (self.names[i],), (self.types[i],), (self.item_names[i],)) for i in range(self.rank))
-        if dim not in self and self.is_uniform:
-            return tuple([self])
-        from ._tensors import Tensor
-        if dim in self:
-            inner = self.without(dim)
-            dim_size = self.get_size(dim)
-        else:
-            inner = self
-            dim_size = self.shape.get_size(dim)
-        sizes = []
-        for size in inner.sizes:
-            if isinstance(size, Tensor) and dim in size.shape:
-                sizes.append(size._unstack(dim))
-                dim_size = size.shape.get_size(dim)
-            else:
-                sizes.append(size)
-        assert isinstance(dim_size, int)
-        shapes = tuple(Shape(tuple([int(size[i]) if isinstance(size, tuple) else size for size in sizes]), inner.names, inner.types, inner.item_names) for i in range(dim_size))
-        return shapes
+        ...
 
     @property
     def name(self) -> str:
@@ -629,8 +388,7 @@ class Shape:
         See Also:
             `Shape.names`.
         """
-        assert self.rank == 1, f"Shape.name is only defined for shapes of rank 1. shape={self}"
-        return self.names[0]
+        ...
 
     @property
     def size(self):
@@ -641,11 +399,10 @@ class Shape:
         See Also:
             `Shape.sizes`, `Shape.get_size()`.
         """
-        assert self.rank == 1, f"Shape.size is only defined for shapes of rank 1 but has dims {self}"
-        return self.sizes[0]
+        ...
 
     @property
-    def type(self) -> str:
+    def type(self) -> Callable:
         """
         Only for Shapes containing exactly one single dimension.
         Returns the type of the dimension.
@@ -653,18 +410,11 @@ class Shape:
         See Also:
             `Shape.get_type()`.
         """
-        assert self.rank == 1, "Shape.type is only defined for shapes of rank 1."
-        return self.types[0]
+        ...
 
     @property
-    def dim_type(self):
-        types = set(self.types)
-        assert len(types) == 1, f"Shape contains multiple types: {self}"
-        return DIM_FUNCTIONS[next(iter(types))]
-
-    def __int__(self):
-        assert self.rank == 1, "int(Shape) is only defined for shapes of rank 1."
-        return self.sizes[0]
+    def dim_type(self) -> str:
+        ...
 
     def mask(self, names: Union[tuple, list, set, 'Shape']):
         """
@@ -673,117 +423,19 @@ class Shape:
 
         Args:
           names: instance of dimension
-          names: tuple or list or set: 
+          names: tuple or list or set:
 
         Returns:
           binary sequence
 
         """
-        if isinstance(names, str):
-            names = [names]
-        elif isinstance(names, Shape):
-            names = names.names
-        mask = [1 if name in names else 0 for name in self.names]
-        return tuple(mask)
-
-    def __repr__(self):
-        def size_repr(size, items):
-            if items is not None:
-                items_str = ",".join(items)
-                return items_str if len(items_str) <= 12 else f"{size}:{items[0][:5]}..."
-            return size
-
-        strings = [f"{name}{SUPERSCRIPT.get(dim_type, '?')}={size_repr(size, items)}" for size, name, dim_type, items in self._dimensions]
-        return '(' + ', '.join(strings) + ')'
-
-    def __eq__(self, other):
-        if not isinstance(other, Shape):
-            return False
-        if self.names != other.names or self.types != other.types:
-            return False
-        for size1, size2 in zip(self.sizes, other.sizes):
-            equal = size1 == size2
-            assert isinstance(equal, (bool, math.Tensor))
-            if isinstance(equal, math.Tensor):
-                equal = equal.all
-            if not equal:
-                return False
-        for names1, names2 in zip(self.item_names, other.item_names):
-            if names1 != names2:
-                return False
-        return True
-
-    def __ne__(self, other):
-        return not self == other
-
-    def __bool__(self):
-        return self.rank > 0
-
-    def _reorder(self, names: Union[tuple, list, 'Shape']) -> 'Shape':
-        assert len(names) == self.rank
-        if isinstance(names, Shape):
-            names = names.names
-        order = [self.index(n) for n in names]
-        return self[order]
-
-    def _order_group(self, names: Union[tuple, list, 'Shape']) -> list:
-        """ Reorders the dimensions of this `Shape` so that `names` are clustered together and occur in the specified order. """
-        if isinstance(names, Shape):
-            names = names.names
-        result = []
-        for dim in self.names:
-            if dim not in result:
-                if dim in names:
-                    result.extend(names)
-                else:
-                    result.append(dim)
-        return result
-
-    def __and__(self, other):
-        if other is dual:
-            return concat_shapes(self, self.primal.as_dual())
-        return merge_shapes(self, other)
-
-    def __rand__(self, other):
-        if other is dual:
-            return concat_shapes(self.primal.as_dual(), self)
-        return merge_shapes(self, other)
-
-    def _expand(self, dim: 'Shape', pos=None) -> 'Shape':
-        """**Deprecated.** Use `phiml.math.merge_shapes()` or `phiml.math.concat_shapes()` instead. """
-        if not dim:
-            return self
-        assert dim.name not in self, f"Cannot expand shape {self} by {dim} because dimension already exists."
-        assert isinstance(dim, Shape) and dim.rank == 1, f"Shape.expand() requires a single dimension as a Shape but got {dim}"
-        if pos is None:
-            same_type_dims = self[[i for i, t in enumerate(self.types) if t == dim.type]]
-            if len(same_type_dims) > 0:
-                pos = self.index(same_type_dims.names[0])
-            else:
-                pos = {
-                    BATCH_DIM: 0,
-                    DUAL_DIM: self.batch_rank,
-                    INSTANCE_DIM: self.batch_rank + self.dual_rank,
-                    SPATIAL_DIM: self.batch.rank + self.dual_rank + self.instance_rank,
-                    CHANNEL_DIM: self.rank + 1
-                }[dim.type]
-        elif pos < 0:
-            pos += self.rank + 1
-        sizes = list(self.sizes)
-        names = list(self.names)
-        types = list(self.types)
-        item_names = list(self.item_names)
-        sizes.insert(pos, dim.size)
-        names.insert(pos, dim.name)
-        types.insert(pos, dim.type)
-        item_names.insert(pos, dim.item_names[0])
-        return Shape(tuple(sizes), tuple(names), tuple(types), tuple(item_names))
+        ...
 
     def without(self, dims: 'DimFilter') -> 'Shape':
         """
         Builds a new shape from this one that is missing all given dimensions.
         Dimensions in `dims` that are not part of this Shape are ignored.
-        
+
         The complementary operation is `Shape.only()`.
 
         Args:
@@ -793,29 +445,22 @@ class Shape:
         Returns:
           Shape without specified dimensions
         """
-        if dims is None:  # subtract none
-            return self
-        elif callable(dims):
-            dims = dims(self)
-        if isinstance(dims, str):
-            return self[[i for i in range(self.rank) if self.names[i] not in parse_dim_order(dims)]]
-        elif isinstance(dims, Shape):
-            return self[[i for i in range(self.rank) if self.names[i] not in dims.names]]
-        if isinstance(dims, (tuple, list, set)) and all([isinstance(d, str) for d in dims]):
-            return self[[i for i in range(self.rank) if self.names[i] not in dims]]
-        elif isinstance(dims, (tuple, list, set)):
-            result = self
-            for wo in dims:
-                result = result.without(wo)
-            return result
-        else:
-            raise ValueError(dims)
+        ...
 
-    def only(self, dims: 'DimFilter', reorder=False):
+    def __and__(self, other) -> 'Shape':
+        ...
+
+    def __add__(self, other) -> 'Shape':
+        ...
+
+    def __sub__(self, other) -> 'Shape':
+        ...
+
+    def only(self, dims: 'DimFilter', reorder=False) -> 'Shape':
         """
         Builds a new shape from this one that only contains the given dimensions.
         Dimensions in `dims` that are not part of this Shape are ignored.
-        
+
         The complementary operation is :func:`Shape.without`.
 
         Args:
@@ -827,40 +472,9 @@ class Shape:
           Shape containing only specified dimensions
 
         """
-        if dims is None:  # keep none
-            return EMPTY_SHAPE
-        if callable(dims):
-            dims = dims(self)
-        if isinstance(dims, str):
-            dims = parse_dim_order(dims)
-        if isinstance(dims, Shape):
-            dims = dims.names
-        if isinstance(dims, (tuple, list, set)):
-            if all(isinstance(d, int) for d in dims):
-                if not reorder:
-                    dims = tuple(sorted(dims))
-                return self[dims]
-            dim_names = []
-            for d in dims:
-                if callable(d):
-                    d = d(self)
-                if isinstance(d, str):
-                    dim_names.append(d)
-                elif isinstance(d, Shape):
-                    dim_names.extend(d.names)
-                else:
-                    raise ValueError(f"Format not understood for Shape.only(): {dims}")
-            if reorder:
-                dim_names = [d.name if isinstance(d, Shape) else d for d in dim_names]
-                assert all(isinstance(d, str) for d in dim_names)
-                return self[[self.names.index(d) for d in dim_names if d in self.names]]
-            else:
-                dim_names = [d.name if isinstance(d, Shape) else d for d in dim_names]
-                assert all(isinstance(d, str) for d in dim_names)
-                return self[[i for i in range(self.rank) if self.names[i] in dim_names]]
-        raise ValueError(dims)
+        ...
 
-    def is_compatible(self, *others: 'Shape'):
+    def is_compatible(self, *others: 'Shape') -> bool:
         """
         Checks if this shape and the others can be broadcast.
 
@@ -870,11 +484,7 @@ class Shape:
         Returns:
             `True` only if all shapes are compatible.
         """
-        try:
-            merge_shapes(self, *others)
-            return True
-        except IncompatibleShapes:
-            return False
+        ...
 
     @property
     def rank(self) -> int:
@@ -884,31 +494,31 @@ class Shape:
 
         See `Shape.is_empty`, `Shape.batch_rank`, `Shape.spatial_rank`, `Shape.channel_rank`.
         """
-        return len(self.sizes)
+        ...
 
     @property
     def batch_rank(self) -> int:
         """ Number of batch dimensions """
-        return sum([1 for ty in self.types if ty == BATCH_DIM])
+        ...
 
     @property
     def instance_rank(self) -> int:
-        return sum([1 for ty in self.types if ty == INSTANCE_DIM])
+        ...
 
     @property
     def spatial_rank(self) -> int:
         """ Number of spatial dimensions """
-        return sum([1 for ty in self.types if ty == SPATIAL_DIM])
+        ...
 
     @property
     def dual_rank(self) -> int:
         """ Number of spatial dimensions """
-        return sum([1 for ty in self.types if ty == DUAL_DIM])
+        ...
 
     @property
     def channel_rank(self) -> int:
         """ Number of channel dimensions """
-        return sum([1 for ty in self.types if ty == CHANNEL_DIM])
+        ...
 
     @property
     def well_defined(self):
@@ -920,18 +530,15 @@ class Shape:
         To create an undefined size, call a constructor function (`batch()`, `spatial()`, `channel()`, `instance()`)
         with positional `str` arguments, e.g. `spatial('x')`.
         """
-        for size in self.sizes:
-            if size is None:
-                return False
-        return True
+        ...
 
     @property
     def defined(self):
-        return self[[i for i, size in enumerate(self.sizes) if size is not None]]
+        ...
 
     @property
     def undefined(self):
-        return self[[i for i, size in enumerate(self.sizes) if size is None]]
+        ...
 
     @property
     def shape(self) -> 'Shape':
@@ -948,12 +555,7 @@ class Shape:
         Returns:
             `Shape`.
         """
-        from . import Tensor
-        shape = Shape((self.rank,), ('dims',), (CHANNEL_DIM,), (self.names,))
-        for size in self.sizes:
-            if isinstance(size, Tensor):
-                shape = shape & size.shape
-        return shape
+        ...
 
     @property
     def is_uniform(self) -> bool:
@@ -963,8 +565,7 @@ class Shape:
         See Also:
             `Shape.is_non_uniform`, `Shape.shape`.
         """
-        from ._tensors import Tensor
-        return all(not isinstance(s, Tensor) for s in self.sizes)
+        ...
 
     @property
     def is_non_uniform(self) -> bool:
@@ -974,7 +575,7 @@ class Shape:
         See Also:
             `Shape.is_uniform`, `Shape.shape`.
         """
-        return not self.is_uniform
+        ...
 
     @property
     def non_uniform(self) -> 'Shape':
@@ -984,9 +585,7 @@ class Shape:
         See Also
             `Shape.non_uniform_shape`
         """
-        from . import Tensor
-        indices = [i for i, size in enumerate(self.sizes) if isinstance(size, Tensor) and size.rank > 0]
-        return self[indices]
+        ...
 
     @property
     def non_uniform_shape(self):
@@ -1000,12 +599,7 @@ class Shape:
         See Also
             `Shape.non_uniform`.
         """
-        from . import Tensor
-        shape = EMPTY_SHAPE
-        for size in self.sizes:
-            if isinstance(size, Tensor):
-                shape = shape & size.shape
-        return shape
+        ...
 
     def with_size(self, size: Union[int, Sequence[str]]):
         """
@@ -1021,8 +615,7 @@ class Shape:
         Returns:
             `Shape`
         """
-        assert self.rank == 1, "Shape.with_size() is only defined for shapes of rank 1."
-        return self.with_sizes([size])
+        ...
 
     def with_sizes(self, sizes: Union[Sequence[int], Sequence[Tuple[str, ...]], 'Shape', int], keep_item_names=True):
         """
@@ -1044,48 +637,14 @@ class Shape:
         Returns:
             `Shape` with same names and types as `self`.
         """
-        if isinstance(sizes, (int, str)):
-            sizes = [sizes] * len(self.sizes)
-        if isinstance(sizes, Shape):
-            item_names = [sizes.get_item_names(dim) if dim in sizes else self.get_item_names(dim) for dim in self.names]
-            sizes = [sizes.get_size(dim) if dim in sizes else s for dim, s in self._named_sizes]
-            return Shape(tuple(sizes), self.names, self.types, tuple(item_names))
-        else:
-            assert len(sizes) == len(self.sizes), f"Failed to set sizes of Shape {self} to {sizes} because rank does not match."
-            sizes_ = []
-            item_names = []
-            for i, obj in enumerate(sizes):
-                new_size, new_item_names = Shape._size_and_item_names_from_obj(obj, self.sizes[i], self.item_names[i], keep_item_names)
-                sizes_.append(new_size)
-                item_names.append(new_item_names)
-            return Shape(tuple(sizes_), self.names, self.types, tuple(item_names))
-
-    @staticmethod
-    def _size_and_item_names_from_obj(obj, prev_size, prev_item_names, keep_item_names=True):
-        if isinstance(obj, str):
-            obj = [s.strip() for s in obj.split(',')]
-        if isinstance(obj, (tuple, list)):
-            return len(obj), tuple(obj)
-        elif isinstance(obj, Number):
-            return obj, prev_item_names if keep_item_names and (prev_size is None or _size_equal(obj, prev_size)) else None
-        elif isinstance(obj, math.Tensor) or obj is None:
-            return obj, None
-        elif isinstance(obj, Shape):
-            return obj.rank, obj.names
-        else:
-            raise ValueError(f"sizes can only contain int, str or Tensor but got {type(obj)}")
+        ...
 
     def without_sizes(self):
         """
         Returns:
             `Shape` with all sizes undefined (`None`)
         """
-        return Shape((None,) * self.rank, self.names, self.types, (None,) * self.rank)
-
-    def _replace_single_size(self, dim: str, size: int, keep_item_names: bool = False):
-        new_sizes = list(self.sizes)
-        new_sizes[self.index(dim)] = size
-        return self.with_sizes(new_sizes, keep_item_names=keep_item_names)
+        ...
 
     def with_dim_size(self, dim: Union[str, 'Shape'], size: Union[int, 'math.Tensor', str, tuple, list], keep_item_names=True):
         """
@@ -1098,21 +657,9 @@ class Shape:
         Returns:
             `Shape` with same names and types as `self`.
         """
-        if isinstance(dim, Shape):
-            dim = dim.name
-        assert isinstance(dim, str)
-        new_size, new_item_names = Shape._size_and_item_names_from_obj(size, self.get_size(dim), self.get_item_names(dim), keep_item_names)
-        return self.replace(dim, Shape((new_size,), (dim,), (self.get_type(dim),), (new_item_names,)), keep_item_names=keep_item_names)
+        ...
 
-    def _with_names(self, names: Union[str, tuple, list]):
-        if isinstance(names, str):
-            names = parse_dim_names(names, self.rank)
-            names = [n if n is not None else o for n, o in zip(names, self.names)]
-        return Shape(self.sizes, tuple(names), self.types, self.item_names)
-
-    def _replace_names_and_types(self,
-                                 dims: Union['Shape', str, tuple, list],
-                                 new: Union['Shape', str, tuple, list]) -> 'Shape':
+    def replace(self, dims: Union['Shape', str, tuple, list], new: 'Shape') -> 'Shape':
         """
         Returns a copy of `self` with `dims` replaced by `new`.
         Dimensions that are not present in `self` are ignored.
@@ -1121,109 +668,26 @@ class Shape:
 
         Args:
             dims: Dimensions to replace.
-            new: New dimensions, must have same length as `dims`.
+            new: New dimensions, must have same length as `dims` if `len(dims) > 1`.
                 If a `Shape` is given, replaces the dimension types and item names as well.
 
         Returns:
             `Shape` with same rank and dimension order as `self`.
         """
-        dims = parse_dim_order(dims)
-        sizes = [math.rename_dims(s, dims, new) if isinstance(s, math.Tensor) else s for s in self.sizes]
-        new = parse_dim_order(new) if isinstance(new, str) else new
-        names = list(self.names)
-        types = list(self.types)
-        item_names = list(self.item_names)
-        for old_name, new_dim in zip(dims, new):
-            if old_name in self:
-                if isinstance(new_dim, Shape):
-                    names[self.index(old_name)] = new_dim.name
-                    types[self.index(old_name)] = new_dim.type
-                    item_names[self.index(old_name)] = new_dim.item_names[0]
-                else:
-                    names[self.index(old_name)] = _apply_prefix(new_dim, types[self.index(old_name)])
-        return Shape(tuple(sizes), tuple(names), tuple(types), tuple(item_names))
+        ...
 
-    def replace(self, dims: Union['Shape', str, tuple, list], new: 'Shape', keep_item_names=True, replace_item_names: DimFilter = None) -> 'Shape':
+    def replace_selection(self, names: Sequence[str], new: 'Shape') -> 'Shape':
         """
-        Returns a copy of `self` with `dims` replaced by `new`.
-        Dimensions that are not present in `self` are ignored.
-
-        The dimension order is preserved.
+        Replace some of the dims of this shape.
 
         Args:
-            dims: Dimensions to replace.
-            new: New dimensions, must have same length as `dims`.
-                If a `Shape` is given, replaces the dimension types and item names as well.
-            keep_item_names: Keeps existing item names for dimensions where `new` does not specify item names if the new dimension has the same size.
-            replace_item_names: For which dims the item names should be replaced as well.
+            names: Sequence of dim names.
+            new: Replacement dims, must have same length as `old`.
 
         Returns:
-            `Shape` with same rank and dimension order as `self`.
+            Copy of `self` with replaced dims.
         """
-        dims = parse_dim_order(dims)
-        assert isinstance(new, Shape), f"new must be a Shape but got {new}"
-        names = list(self.names)
-        sizes = list(self.sizes)
-        types = list(self.types)
-        item_names = list(self.item_names)
-        for i in self.indices(self.only(replace_item_names)):
-            if item_names[i]:
-                if len(new) > len(dims):
-                    raise NotImplementedError
-                else:
-                    name_map = {d: n for d, n in zip(dims, new.names)}
-                    item_names[i] = tuple([name_map.get(n, n) for n in item_names[i]])
-        if len(new) > len(dims):  # Put all in one spot
-            assert len(dims) == 1, "Cannot replace 2+ dims by more replacements"
-            index = self.index(dims[0])
-            return concat_shapes(self[:index], new, self[index+1:])
-        for old_name, new_dim in zip(dims, new):
-            if old_name in self:
-                names[self.index(old_name)] = new_dim.name
-                types[self.index(old_name)] = new_dim.type
-                if new_dim.item_names[0]:
-                    item_names[self.index(old_name)] = new_dim.item_names[0]
-                elif not _size_equal(new_dim.size, self.get_size(old_name)) or not keep_item_names:
-                    item_names[self.index(old_name)] = None  # forget previous item names
-                sizes[self.index(old_name)] = new_dim.size
-        replaced = Shape(tuple(sizes), tuple(names), tuple(types), tuple(item_names))
-        if len(new) == len(dims):
-            return replaced
-        to_remove = dims[-(len(dims) - len(new)):]
-        return replaced.without(to_remove)
-
-    def _with_types(self, types: Union['Shape', str, Tuple[str, ...], List[str]]):
-        """
-        Only for internal use.
-        Note: This method does not rename dimensions to comply with type requirements (e.g. ~ for dual dims).
-        """
-        if isinstance(types, Shape):
-            types = tuple([types.get_type(name) if name in types else self_type for name, self_type in zip(self.names, self.types)])
-        elif isinstance(types, str):
-            types = (types,) * self.rank
-        elif isinstance(types, (tuple, list)):
-            types = tuple(types)
-        else:
-            raise ValueError(types)
-        names = tuple([_apply_prefix(name, t) for name, t in zip(self.names, types)])
-        return Shape(self.sizes, names, types, self.item_names)
-
-    def _with_item_names(self, item_names: tuple):
-        return Shape(self.sizes, self.names, self.types, item_names)
-
-    def _with_item_name(self, dim: str, item_name: tuple):
-        if dim not in self:
-            return self
-        item_names = list(self.item_names)
-        item_names[self.index(dim)] = item_name
-        return Shape(self.sizes, self.names, self.types, tuple(item_names))
-
-    def _perm(self, names: Tuple[str]) -> List[int]:
-        assert len(set(names)) == len(names), f"No duplicates allowed but got {names}"
-        assert len(names) >= len(self.names), f"Cannot find permutation for {self} given {names} because names {set(self.names) - set(names)} are missing"
-        assert len(names) <= len(self.names), f"Cannot find permutation for {self} given {names} because too many names were passed: {names}"
-        perm = [self.names.index(name) for name in names]
-        return perm
+        ...
 
     @property
     def volume(self) -> Union[int, None]:
@@ -1234,30 +698,12 @@ class Shape:
         Returns:
             volume as `int` or `Tensor` or `None` if the shape is not `Shape.well_defined`
         """
-        result = 1
-        for size in self.sizes:
-            if size is None:
-                return None
-            result *= size
-        from ._tensors import Tensor
-        if not isinstance(result, Tensor):
-            return result
-        result /= self.non_uniform_shape.volume  # We summed up the items -> undo multiplication
-        return int(result.sum)
+        ...
 
     @property
     def is_empty(self) -> bool:
         """ True if this shape has no dimensions. Equivalent to `Shape.rank` `== 0`. """
-        return len(self.sizes) == 0
-
-    def after_pad(self, widths: dict) -> 'Shape':
-        sizes = list(self.sizes)
-        item_names = list(self.item_names)
-        for dim, (lo, up) in widths.items():
-            if dim in self.names:
-                sizes[self.index(dim)] += lo + up
-                item_names[self.index(dim)] = None
-        return Shape(tuple(sizes), self.names, self.types, tuple(item_names))
+        ...
 
     def prepare_gather(self, dim: str, selection: Union[slice, int, 'Shape', str, tuple, list]) -> Union[slice, List[int]]:
         """
@@ -1270,104 +716,13 @@ class Shape:
         Returns:
 
         """
-        if isinstance(selection, Shape):
-            selection = selection.name if selection.rank == 1 else selection.names
-        if isinstance(selection, str) and ',' in selection:
-            selection = parse_dim_order(selection)
-        if isinstance(selection, str):  # single item name
-            item_names = self.get_item_names(dim, fallback_spatial=True)
-            assert item_names is not None, f"No item names defined for dim '{dim}' in tensor {self.shape} and dimension size does not match spatial rank."
-            assert selection in item_names, f"Accessing tensor.{dim}['{selection}'] failed. Item names are {item_names}."
-            selection = item_names.index(selection)
-        if isinstance(selection, (tuple, list)):
-            selection = list(selection)
-            if any([isinstance(s, str) for s in selection]):
-                item_names = self.get_item_names(dim, fallback_spatial=True)
-                for i, s in enumerate(selection):
-                    if isinstance(s, str):
-                        assert item_names is not None, f"Accessing tensor.{dim}['{s}'] failed because no item names are present on tensor {self.shape}"
-                        assert s in item_names, f"Accessing tensor.{dim}['{s}'] failed. Item names are {item_names}."
-                        selection[i] = item_names.index(s)
-            if not selection:  # empty
-                selection = slice(0, 0)
-        return selection
+        ...
 
     def prepare_renaming_gather(self, dim: str, selection: Union[slice, int, 'Shape', str, tuple, list]):
-        if isinstance(selection, str) and '->' in selection:
-            selection, new_names = selection.split('->')
-            if new_names == '?':
-                return self.prepare_gather(dim, selection), self[dim]._with_item_names((None,))
-            else:
-                return self.prepare_gather(dim, selection), self[dim].with_size(new_names)
-        else:
-            return self.prepare_gather(dim, selection), None
-
-    def resolve_index(self, index: Dict[str, Union[slice, int, 'Shape', str, tuple, list]]) -> Dict[str, Union[slice, int, tuple, list]]:
-        """
-        Replaces item names by the corresponding indices.
-
-        Args:
-            index: n-dimensional index or slice.
-
-        Returns:
-            Same index but without any reference to item names.
-        """
-        return {dim: self.prepare_gather(dim, s) for dim, s in index.items()}
+        ...
 
     def after_gather(self, selection: dict) -> 'Shape':
-        from . import Tensor
-        if self.is_non_uniform:
-            sizes = [(s[selection] if isinstance(s, Tensor) else s) for s in self.sizes]
-            sizes = [(int(s) if isinstance(s, Tensor) and s.rank == 0 else s) for s in sizes]
-            result = self.with_sizes(sizes)
-        else:
-            result = self
-        for sel_dim, sel in selection.items():
-            if sel_dim not in self.names:
-                continue
-            sel = self.prepare_gather(sel_dim, sel)
-            if isinstance(sel, int):
-                result = result.without(sel_dim)
-            elif isinstance(sel, slice):
-                step = int(sel.step) if sel.step is not None else 1
-                start = int(sel.start) if sel.start is not None else (0 if step > 0 else self.get_size(sel_dim)-1)
-                stop = int(sel.stop) if sel.stop is not None else (self.get_size(sel_dim) if step > 0 else -1)
-                if stop < 0 and step > 0:
-                    stop += self.get_size(sel_dim)
-                    assert stop >= 0
-                if start < 0 and step > 0:
-                    start += self.get_size(sel_dim)
-                    assert start >= 0
-                stop = min(stop, self.get_size(sel_dim))
-                new_size = math.to_int64(math.ceil(math.wrap((stop - start) / step)))
-                if new_size.rank == 0:
-                    new_size = int(new_size)  # NumPy array not allowed because not hashable
-                result = result._replace_single_size(sel_dim, new_size, keep_item_names=True)
-                if step < 0:
-                    result = result.flipped([sel_dim])
-                if self.get_item_names(sel_dim) is not None:
-                    result = result._with_item_name(sel_dim, tuple(self.get_item_names(sel_dim)[sel]))
-            elif isinstance(sel, (tuple, list)):
-                result = result._replace_single_size(sel_dim, len(sel))
-                if self.get_item_names(sel_dim) is not None:
-                    result = result._with_item_name(sel_dim, tuple([self.get_item_names(sel_dim)[i] for i in sel]))
-            elif isinstance(sel, Tensor):
-                if sel.dtype.kind == bool:
-                    raise NotImplementedError("Shape.after_gather(Tensor[bool]) not yet implemented")
-                    # from ._ops import nonzero
-                    # sel = nonzero(sel)
-                if sel.dtype.kind == int:
-                    assert len(selection) == 1, f"When slicing a Shape with Tensor[int], only one sel item is allowed but got {sel}"
-                    sel_shape = shape(sel)
-                    assert sel_shape.channel_rank == 1 and sel_shape.channel.item_names[0], f"Shape.after_gather(Tensor[int]) requires indices to have a single channel dim with item names but got {sel}"
-                    indexed = sel_shape.channel.item_names[0]
-                    assert indexed in self, f"All indexed dims {indexed} must be part of sliced Shape {self}"
-                    from ._ops import slice_
-                    sizes = [slice_(s, sel) for s in self.sizes]
-                    return self.with_sizes(sizes).without(indexed) & sel_shape.non_channel
-            else:
-                raise NotImplementedError(f"{type(sel)} not supported. Only (int, slice) allowed.")
-        return result
+        ...
 
     def meshgrid(self, names=False):
         """
@@ -1384,8 +739,770 @@ class Shape:
         Returns:
             `dict` iterator.
         """
+        ...
+
+
+DimFilter = Union[str, Sequence, set, Shape, Callable, None]
+try:
+    DimFilter.__doc__ = """Dimension filters can be used with `Shape.only()` and `Shype.without()`, making them the standard tool for specifying sets of dimensions.
+
+    The following types can be used as dimension filters:
+
+    * `Shape` instances
+    * `tuple` or `list` objects containing dimension names as `str`
+    * Single `str` listing comma-separated dimension names
+    * Any function `filter(Shape) -> Shape`, such as `math.batch()`, `math.non_batch()`, `math.spatial()`, etc.
+    """  # docstring must be set explicitly
+except AttributeError:  # on older Python versions, this is not possible
+    pass
+
+
+if sys.version_info >= (3, 10):
+    _dataclass_kwargs = {'slots': True}
+else:
+    _dataclass_kwargs = {}
+
+
+@dataclass(frozen=True, **_dataclass_kwargs)
+class Dim:
+    name: str
+    size: Union[int, Any]
+    dim_type: str
+    slice_names: Optional[Tuple[str, ...]]
+
+    def __post_init__(self):
+        if DEBUG_CHECKS:
+            assert isinstance(self.name, str)
+            assert self.dim_type in DIM_TYPES
+            from ._tensors import Tensor
+            if isinstance(self.size, Tensor):
+                assert self.size.rank > 0
+            else:
+                assert self.size is None or isinstance(self.size, int)
+            if self.dim_type == DUAL_DIM:
+                assert self.name.startswith('~'), f"Dual dimensions must start with '~' but got '{self.name}' in {self}"
+            assert isinstance(self.slice_names, tuple) or self.slice_names is None
+            if self.slice_names is not None:
+                assert all(isinstance(n, str) for n in self.slice_names)
+                try:
+                    int(self.size)
+                except Exception:
+                    raise AssertionError(f"When item names are present, the size must be an integer type")
+                assert len(self.slice_names) == self.size, f"Number of item names ({len(self.slice_names)}) does not match size {self.size}"
+                assert len(set(self.slice_names)) == len(self.slice_names), f"Duplicate item names in shape {self} at dim '{self.name}': {self.slice_names}"
+
+    @property
+    def dims(self):
+        return {self.name: self}
+
+    def __len__(self):
+        return 1
+    @property
+    def rank(self):
+        return 1
+
+    def __bool__(self):
+        return True
+    @property
+    def is_empty(self) -> bool:
+        return False
+
+    @property
+    def volume(self) -> Union[int, None]:
+        if self.size is None or isinstance(self.size, int):
+            return self.size
+        return int((self.size / self.non_uniform_shape.volume).sum)
+
+    @property
+    def names(self):
+        return self.name,
+    @property
+    def name_list(self):
+        return [self.name]
+    @property
+    def sizes(self):
+        return self.size,
+    @property
+    def types(self):
+        return self.type,
+    @property
+    def dim_types(self):
+        return self.dim_type,
+    @property
+    def item_names(self):
+        return self.slice_names,
+
+    @property
+    def untyped_dict(self):
+        return {self.name: self.slice_names if self.slice_names is not None else self.size}
+
+    @property
+    def type(self) -> str:
+        return DIM_FUNCTIONS[self.dim_type]
+
+    @property
+    def is_uniform(self) -> bool:
+        return isinstance(self.size, int)
+    @property
+    def is_non_uniform(self) -> bool:
+        return self.size is not None and not isinstance(self.size, int)
+    @property
+    def non_uniform(self):
+        return EMPTY_SHAPE if isinstance(self.size, int) else self
+    @property
+    def non_uniform_shape(self):
+        return EMPTY_SHAPE if isinstance(self.size, int) else shape(self.size)
+
+    @property
+    def singleton(self):
+        return self if _size_equal(self.size, 1) else EMPTY_SHAPE
+
+    @property
+    def well_defined(self):
+        return self.size is not None
+    @property
+    def defined(self):
+        return self if self.size is not None else EMPTY_SHAPE
+    @property
+    def undefined(self):
+        return self if self.size is None else EMPTY_SHAPE
+
+    @property
+    def batch_rank(self) -> int:
+        return 1 if self.dim_type == BATCH_DIM else 0
+    @property
+    def instance_rank(self) -> int:
+        return 1 if self.dim_type == INSTANCE_DIM else 0
+    @property
+    def spatial_rank(self) -> int:
+        return 1 if self.dim_type == SPATIAL_DIM else 0
+    @property
+    def dual_rank(self) -> int:
+        return 1 if self.dim_type == DUAL_DIM else 0
+    @property
+    def channel_rank(self) -> int:
+        return 1 if self.dim_type == CHANNEL_DIM else 0
+
+    @property
+    def batch(self):
+        return self if self.dim_type == BATCH_DIM else EMPTY_SHAPE
+    @property
+    def dual(self):
+        return self if self.dim_type == DUAL_DIM else EMPTY_SHAPE
+    @property
+    def instance(self):
+        return self if self.dim_type == INSTANCE_DIM else EMPTY_SHAPE
+    @property
+    def spatial(self):
+        return self if self.dim_type == SPATIAL_DIM else EMPTY_SHAPE
+    @property
+    def channel(self):
+        return self if self.dim_type == CHANNEL_DIM else EMPTY_SHAPE
+    @property
+    def primal(self):
+        return self if self.dim_type in PRIMAL_TYPES else EMPTY_SHAPE
+
+    @property
+    def non_batch(self):
+        return self if self.dim_type != BATCH_DIM else EMPTY_SHAPE
+    @property
+    def non_dual(self):
+        return self if self.dim_type != DUAL_DIM else EMPTY_SHAPE
+    @property
+    def non_instance(self):
+        return self if self.dim_type != INSTANCE_DIM else EMPTY_SHAPE
+    @property
+    def non_spatial(self):
+        return self if self.dim_type != SPATIAL_DIM else EMPTY_SHAPE
+    @property
+    def non_channel(self):
+        return self if self.dim_type != CHANNEL_DIM else EMPTY_SHAPE
+    @property
+    def non_primal(self):
+        return self if self.dim_type not in PRIMAL_TYPES else EMPTY_SHAPE
+
+    def __repr__(self):
+        if self.slice_names is not None:
+            items_str = ",".join(self.slice_names)
+            size_str = items_str if len(items_str) <= 12 else f"{self.size}:{self.slice_names[0][:5]}..."
+        else:
+            size_str = self.size
+        return f"({self.name}{SUPERSCRIPT.get(self.dim_type, '?')}={size_str})"
+
+    def __eq__(self, other):
+        if isinstance(other, Dim):
+            return self.name == other.name and self.dim_type == other.dim_type and self.slice_names == other.slice_names and _size_equal(self.size, other.size)
+        if isinstance(other, MixedShape):
+            return len(other) == 1 and self == getattr(other, self.dim_type)
+        return False
+
+    def __contains__(self, item):
+        if isinstance(item, Dim):
+            return item.name == self.name
+        if isinstance(item, str):
+            return item == self.name
+        if isinstance(item, (tuple, list)):
+            return len(item) == 1 and item[0] == self.name
+        return not item or (len(item) == 1 and item.name == self.name)
+
+    def index(self, dim: Union[str, 'Shape', None]) -> Optional[int]:
+        if dim is None:
+            return None
+        if isinstance(dim, SHAPE_TYPES):
+            dim = dim.name
+        if isinstance(dim, str):
+            if dim != self.name:
+                raise ValueError(f"Shape {self} has no dimension '{dim}'")
+            return 0
+        raise ValueError(f"index() requires a single dimension as input but got {dim}")
+
+    def indices(self, names: Sequence[str]) -> Tuple[int, ...]:
+        return (0,) if names else ()
+
+    def __getitem__(self, selection):
+        if isinstance(selection, SHAPE_TYPES):
+            selection = selection.names
+        if isinstance(selection, (tuple, list)):
+            if not selection:
+                return EMPTY_SHAPE
+            assert len(selection) == 1, f"Only one dim contained in {self} but tried to access {selection}"
+            selection = selection[0]
+        if isinstance(selection, int):
+            assert selection in {0, -1}, f"Tried to access index {selection} in {self}"
+            return self
+        elif isinstance(selection, slice):
+            if selection.start in {0, None} and selection.stop in {1, None}:
+                return self
+            return EMPTY_SHAPE
+        elif isinstance(selection, str):
+            assert selection == self.name, f"Name {selection} not contained in {self}"
+            return self
+        raise AssertionError("Can only access shape elements as shape[int], shape[str], shape[slice], shape[Sequence] or shape[Shape]")
+
+    def __iter__(self):
+        return iter([self])
+
+    def get_size(self, dim: Union[str, 'Shape'], default=None):
+        dim = dim.name if isinstance(dim, SHAPE_TYPES) else dim
+        if dim == self.name:
+            return self.size
+        if default is not None:
+            return default
+        raise KeyError(f"get_size() failed because '{dim}' is not part of {self} and no default value was provided")
+
+    def get_dim_type(self, dim: str) -> str:
+        return self.dim_type
+
+    def get_item_names(self, dim: Union[str, 'Shape'], fallback_spatial=False) -> Union[tuple, None]:
+        dim = dim.name if isinstance(dim, SHAPE_TYPES) else dim
+        if dim != self.name:
+            raise KeyError(f"get_item_names() failed because '{dim}' is not part of {self}")
+        return self.slice_names  # fallback_spatial requires shape.spatial and dim.type==channel
+
+    def __and__(self, other):
+        if other is dual:
+            return self & self.primal.as_dual()
+        if isinstance(other, (Dim, PureShape)) and other.dim_type == self.dim_type:
+            return pure_merge(self, other, allow_varying_sizes=False)
+        elif isinstance(other, (Dim, PureShape)):
+            if not other:
+                return self
+            by_type = [EMPTY_SHAPE] * len(DIM_TYPES)
+            by_type[TYPE_INDEX[self.dim_type]] = self
+            by_type[TYPE_INDEX[other.dim_type]] = other
+            return MixedShape(*by_type, dims={self.name: self, **other.dims})
+        return NotImplemented
+
+    def is_compatible(self, other):
+        if self.name not in other:
+            return True
+        dim = other[self.name]
+        if not _size_equal(self.size, dim.size):
+            return False
+        return self.dim_type == dim.dim_type
+
+    def isdisjoint(self, other) -> bool:
+        if isinstance(other, SHAPE_TYPES):
+            return self.name not in other
+        return self.name not in parse_dim_order(other)
+
+    def only(self, dims: 'DimFilter', reorder=False):
+        if dims is None:  # keep none
+            return EMPTY_SHAPE
+        if callable(dims):
+            return dims(self)
+        if isinstance(dims, str):
+            dims = parse_dim_order(dims)
+        if isinstance(dims, SHAPE_TYPES):
+            return self if self.name in dims else EMPTY_SHAPE
+        assert isinstance(dims, (tuple, list, set))
+        if all(isinstance(d, int) for d in dims):
+            return self if 0 in dims else EMPTY_SHAPE
+        for d in dims:
+            if callable(d):
+                if d(self):
+                    return self
+            elif isinstance(d, str):
+                if d == self.name:
+                    return self
+            elif isinstance(d, SHAPE_TYPES):
+                if self.name in d:
+                    return self
+            else:
+                raise ValueError(f"Format not understood for Shape.only(): {dims}")
+        return EMPTY_SHAPE
+
+    def __add__(self, other):
+        if isinstance(other, int):
+            return Dim(self.name, self.size + other, self.dim_type, None)
+        return concat_shapes_(self, other)
+
+    def __sub__(self, other):
+        if isinstance(other, int):
+            return Dim(self.name, self.size - other, self.dim_type, None)
+        return self.without(other)
+
+    def without(self, dims: 'DimFilter'):
+        if dims is None:  # subtract none
+            return self
+        elif callable(dims):
+            dims = dims(self)
+        if isinstance(dims, (str, SHAPE_TYPES)):
+            dims = parse_dim_order(dims)
+            return EMPTY_SHAPE if self.name in dims else self
+        if isinstance(dims, (tuple, list, set)) and all([isinstance(d, str) for d in dims]):
+            return EMPTY_SHAPE if self.name in dims else self
+        elif isinstance(dims, (tuple, list, set)):
+            for d in dims:
+                if not self.without(d):
+                    return EMPTY_SHAPE
+            return self
+        else:
+            raise ValueError(dims)
+
+    def meshgrid(self, names=False):
         assert self.is_uniform, f"Shape.meshgrid() is currently not supported for non-uniform tensors, {self}"
-        indices = [0] * self.rank
+        if names and self.slice_names is not None:
+            for sln in self.slice_names:
+                yield {self.name: sln}
+        else:  # indices
+            for i in range(self.size):
+                yield {self.name: i}
+
+    def with_size(self, size, keep_item_names=True):
+        if isinstance(size, SHAPE_TYPES):
+            names = size.get_item_names(self.name)
+            size = names if names is not None else size.get_size(self.name)
+        if isinstance(size, str):
+            names = parse_dim_order(size)
+            return Dim(self.name, len(names), self.dim_type, names)
+        if isinstance(size, (tuple, list)):
+            assert all(isinstance(s, str) for s in size)
+            return Dim(self.name, len(size), self.dim_type, tuple(size))
+        if size is None:
+            return Dim(self.name, None, self.dim_type, None)
+        if keep_item_names and _size_equal(self.size, size):
+            return self
+        return Dim(self.name, size, self.dim_type, None)
+
+    def with_dim_size(self, dim: Union[str, 'Shape'], size: Union[int, 'math.Tensor', str, tuple, list], keep_item_names=True):
+        name = dim.name if isinstance(dim, SHAPE_TYPES) else dim
+        assert name == self.name, f"Cannot set dim size of {dim} on {self}"
+        return self.with_size(size, keep_item_names=keep_item_names)
+
+    def with_sizes(self, sizes: Union[Sequence[int], Sequence[Tuple[str, ...]], 'Shape', int], keep_item_names=True):
+        if isinstance(sizes, SHAPE_TYPES):
+            if self.name not in sizes:
+                return self
+            slices = sizes.get_item_names(self.name)
+            return self.with_size(slices if slices is not None else sizes.get_size(self.name))
+        if isinstance(sizes, int):
+            return self.with_size(sizes)
+        assert len(sizes) == 1, f"Too many sizes for shape {self}: {sizes}"
+        return self.with_size(sizes[0])
+
+    def without_sizes(self):
+        return Dim(self.name, None, self.dim_type, None)
+
+    def flipped(self, dims: Union[List[str], Tuple[str]]):
+        if self.slice_names is None or self.name not in dims:
+            return self
+        return Dim(self.name, self.size, self.dim_type, self.slice_names[::-1])
+
+    def replace(self, dims: Union['Shape', str, tuple, list], new: 'Shape'):
+        old_names = parse_dim_order(dims)
+        if len(old_names) == 1 and self.name == old_names[0]:
+            return self._replace(new)
+        elif self.name in old_names:
+            idx = old_names.index(self.name)
+            return self._replace(new[idx])
+        else:
+            return self
+
+    def _replace(self, new: 'Shape'):
+        if self.slice_names is None or new.slice_names is not None:
+            return new
+        if len(new) != 1 or not _size_equal(self.size, new.size):
+            return new
+        else:  # keep item names from self
+            return Dim(new.name, new.size, new.dim_type, self.slice_names)
+
+    def replace_selection(self, names: Sequence[str], new: Shape):
+        if self.name not in names:
+            return self
+        new = new[names.index(self.name)]
+        if self.slice_names is None or new.item_names[0] is not None or not _size_equal(self.size, new.size):
+            return new
+        return Dim(new.name, new.size, new.dim_type, self.slice_names)
+
+    def as_batch(self):
+        name = _apply_prefix(self.name, BATCH_DIM) if self.dim_type == DUAL_DIM else self.name
+        return Dim(name, self.size, BATCH_DIM, self.slice_names)
+    def as_dual(self):
+        return Dim(_apply_prefix(self.name, DUAL_DIM), self.size, DUAL_DIM, self.slice_names)
+    def as_instance(self):
+        name = _apply_prefix(self.name, INSTANCE_DIM) if self.dim_type == DUAL_DIM else self.name
+        return Dim(name, self.size, INSTANCE_DIM, self.slice_names)
+    def as_spatial(self):
+        name = _apply_prefix(self.name, SPATIAL_DIM) if self.dim_type == DUAL_DIM else self.name
+        return Dim(name, self.size, SPATIAL_DIM, self.slice_names)
+    def as_channel(self):
+        name = _apply_prefix(self.name, CHANNEL_DIM) if self.dim_type == DUAL_DIM else self.name
+        return Dim(name, self.size, CHANNEL_DIM, self.slice_names)
+    def as_type(self, new_type: Callable):
+        dim_type = TYPE_BY_FUNCTION[new_type]
+        return Dim(_apply_prefix(self.name, dim_type), self.size, dim_type, self.slice_names)
+
+
+@dataclass(frozen=True)  # slots not compatible with @cached_property
+class PureShape:
+    dim_type: str
+    dims: Dict[str, Dim]
+
+    def __post_init__(self):
+        if DEBUG_CHECKS:
+            assert len(self.dims) != 1
+            assert self.dim_type in DIM_TYPES
+            for n, dim in self.dims.items():
+                assert n == dim.name
+                assert dim.dim_type == self.dim_type
+
+    def __len__(self):  # this is also used for bool(self)
+        return len(self.dims)
+    @property
+    def rank(self):
+        return len(self.dims)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.dims
+
+    @property
+    def volume(self) -> Union[int, None]:
+        result = 1
+        for size in self.sizes:
+            if size is None:
+                return None
+            result *= size
+        from ._tensors import Tensor
+        if not isinstance(result, Tensor):
+            return result
+        result /= self.non_uniform_shape.volume  # We summed up the items -> undo multiplication
+        return int(result.sum)
+
+    @cached_property
+    def names(self):
+        return tuple(self.dims)
+    @property
+    def name_list(self):
+        return list(self.dims)
+    @property
+    def sizes(self):
+        return tuple([d.size for d in self.dims.values()])
+    @property
+    def types(self):
+        return [d.type for d in self.dims.values()]
+    @property
+    def dim_types(self):
+        return [d.dim_type for d in self.dims.values()]
+    @property
+    def item_names(self):
+        return [d.slice_names for d in self.dims.values()]
+
+    @property
+    def untyped_dict(self):
+        return {k: v for dim in self.dims.values() for k, v in dim.untyped_dict.items()}
+
+    @property
+    def name(self):
+        raise AssertionError("Shape.name is only defined for shapes of rank 1.")
+    @property
+    def size(self):
+        raise AssertionError("Shape.size is only defined for shapes of rank 1.")
+    @property
+    def type(self):
+        raise AssertionError("Shape.type is only defined for shapes of rank 1.")
+
+    @property
+    def is_uniform(self) -> bool:
+        return all(dim.is_uniform for dim in self.dims.values())
+    @property
+    def is_non_uniform(self) -> bool:
+        return any(dim.is_non_uniform for dim in self.dims.values())
+    @property
+    def non_uniform(self) -> 'Shape':
+        return PureShape(self.dim_type, {name: dim for name, dim in self.dims.items() if dim.is_non_uniform})
+    @property
+    def non_uniform_shape(self):
+        result = EMPTY_SHAPE
+        for size in self.sizes:
+            if not isinstance(size, int):
+                result &= size.shape
+        return result
+
+    @property
+    def singleton(self):
+        dims = {n: dim for n, dim in self.dims.items() if _size_equal(dim.size, 1)}
+        return next(iter(dims.values())) if len(dims) == 1 else PureShape(self.dim_type, dims)
+
+    @property
+    def well_defined(self):
+        for size in self.sizes:
+            if size is None:
+                return False
+        return True
+    @property
+    def defined(self):
+        dims = {n: dim for n, dim in self.dims.items() if dim.size is not None}
+        return next(iter(dims.values())) if len(dims) == 1 else PureShape(self.dim_type, dims)
+    @property
+    def undefined(self):
+        dims = {n: dim for n, dim in self.dims.items() if dim.size is None}
+        return next(iter(dims.values())) if len(dims) == 1 else PureShape(self.dim_type, dims)
+
+    @property
+    def batch_rank(self) -> int:
+        return len(self.dims) if self.dim_type == BATCH_DIM else 0
+    @property
+    def instance_rank(self) -> int:
+        return len(self.dims) if self.dim_type == INSTANCE_DIM else 0
+    @property
+    def spatial_rank(self) -> int:
+        return len(self.dims) if self.dim_type == SPATIAL_DIM else 0
+    @property
+    def dual_rank(self) -> int:
+        return len(self.dims) if self.dim_type == DUAL_DIM else 0
+    @property
+    def channel_rank(self) -> int:
+        return len(self.dims) if self.dim_type == CHANNEL_DIM else 0
+
+    @property
+    def batch(self):
+        return self if self.dim_type == BATCH_DIM else EMPTY_SHAPE
+    @property
+    def dual(self):
+        return self if self.dim_type == DUAL_DIM else EMPTY_SHAPE
+    @property
+    def instance(self):
+        return self if self.dim_type == INSTANCE_DIM else EMPTY_SHAPE
+    @property
+    def spatial(self):
+        return self if self.dim_type == SPATIAL_DIM else EMPTY_SHAPE
+    @property
+    def channel(self):
+        return self if self.dim_type == CHANNEL_DIM else EMPTY_SHAPE
+    @property
+    def primal(self):
+        return self if self.dim_type in PRIMAL_TYPES else EMPTY_SHAPE
+
+    @property
+    def non_batch(self):
+        return self if self.dim_type != BATCH_DIM else EMPTY_SHAPE
+    @property
+    def non_dual(self):
+        return self if self.dim_type != DUAL_DIM else EMPTY_SHAPE
+    @property
+    def non_instance(self):
+        return self if self.dim_type != INSTANCE_DIM else EMPTY_SHAPE
+    @property
+    def non_spatial(self):
+        return self if self.dim_type != SPATIAL_DIM else EMPTY_SHAPE
+    @property
+    def non_channel(self):
+        return self if self.dim_type != CHANNEL_DIM else EMPTY_SHAPE
+    @property
+    def non_primal(self):
+        return self if self.dim_type not in PRIMAL_TYPES else EMPTY_SHAPE
+
+    def __repr__(self):
+        strings = [repr(dim)[1:-1] for dim in self.dims.values()]
+        return '(' + ', '.join(strings) + ')'
+
+    def __eq__(self, other):
+        if isinstance(other, PureShape):
+            return self.dim_type == other.dim_type and self.dims == other.dims
+        if isinstance(other, MixedShape):
+            return other.__eq__(self)
+        return False
+
+    def __hash__(self):
+        return hash(tuple(self.dims.values()))
+
+    def __contains__(self, item):
+        if isinstance(item, Dim):
+            return item.name in self.dims
+        if isinstance(item, (str, tuple, list)):
+            dims = parse_dim_order(item)
+            return all(dim in self.dims for dim in dims)
+        return all([d in self.dims for d in item.names])
+
+    def index(self, dim: Union[str, 'Shape', None]) -> Optional[int]:
+        if dim is None:
+            return None
+        elif isinstance(dim, str):
+            if dim not in self.dims:
+                raise ValueError(f"Shape {self} has no dimension '{dim}'")
+            return self.names.index(dim)
+        elif isinstance(dim, SHAPE_TYPES):
+            assert len(dim) == 1, f"index() requires a single dimension as input but got {dim}. Use indices() for multiple dimensions."
+            return self.names.index(dim.name)
+        raise ValueError(f"index() requires a single dimension as input but got {dim}")
+
+    def indices(self, names: Sequence[str]) -> Tuple[int, ...]:
+        order = self.names
+        return tuple(order.index(n) for n in names)
+
+    def __getitem__(self, selection):
+        if isinstance(selection, int):
+            return list(self.dims.values())[selection]
+        elif isinstance(selection, slice):
+            return concat_shapes_(*list(self.dims.values())[selection])
+        elif isinstance(selection, str):
+            if ',' in selection:
+                selection = [self.index(s.strip()) for s in selection.split(',')]
+            else:
+                selection = self.index(selection)
+            return self[selection]
+        elif isinstance(selection, SHAPE_TYPES):
+            selection = selection.names
+        if isinstance(selection, (tuple, list)):
+            selection = [self.names[sel] if isinstance(sel, int) else sel for sel in selection]
+            if DEBUG_CHECKS:
+                assert all(isinstance(s, str) for s in selection)
+            return concat_shapes_(*[self.dims[n] for n in selection])
+        raise AssertionError("Can only access shape elements as shape[int], shape[str], shape[slice], shape[Sequence] or shape[Shape]")
+
+    def __iter__(self):
+        return iter(self.dims.values())
+
+    def get_size(self, dim: Union[str, 'Shape'], default=None):
+        name = dim.name if isinstance(dim, SHAPE_TYPES) else dim
+        if default is None:
+            return self.dims[name].size
+        else:
+            return self.dims[name].size if name in self.dims else default
+
+    def get_dim_type(self, dim: str) -> str:
+        return self.dim_type
+
+    def get_item_names(self, dim: Union[str, 'Shape'], fallback_spatial=False) -> Union[tuple, None]:
+        name = dim.name if isinstance(dim, SHAPE_TYPES) else dim
+        return self.dims[name].slice_names  # fallback_spatial requires shape.spatial and dim.type==channel
+
+    def __and__(self, other):
+        if other is dual:
+            return concat_shapes_(self, self.primal.as_dual())
+        if isinstance(other, (Dim, PureShape)) and other.dim_type == self.dim_type:
+            return pure_merge(self, other, allow_varying_sizes=False)
+        elif isinstance(other, (Dim, PureShape)):
+            if not self:
+                return other
+            if not other:
+                return self
+            by_type = [EMPTY_SHAPE] * len(DIM_TYPES)
+            by_type[TYPE_INDEX[self.dim_type]] = self
+            by_type[TYPE_INDEX[other.dim_type]] = other
+            return MixedShape(*by_type, dims={**self.dims, **other.dims})
+        return NotImplemented
+
+    def is_compatible(self, other: Shape):
+        return all(dim.is_compatible(other) for dim in self.dims.values())
+
+    def isdisjoint(self, other) -> bool:
+        if isinstance(other, Dim):
+            return other.name in self.dims
+        if isinstance(other, PureShape):
+            return other.dim_type != self.dim_type or self.dims.keys().isdisjoint(other.dims)
+        elif isinstance(other, MixedShape):
+            return other.isdisjoint(self)
+        return self.dims.keys().isdisjoint(set(parse_dim_order(other)))
+
+    def only(self, dims: 'DimFilter', reorder=False):
+        if not self.dims or dims is None:
+            return EMPTY_SHAPE
+        if isinstance(dims, Dim):
+            return dims if dims.name in self.dims else EMPTY_SHAPE
+        if callable(dims):
+            return dims(self)
+        if isinstance(dims, str):
+            dims = parse_dim_order(dims)
+        elif isinstance(dims, SHAPE_TYPES):
+            dims = [dims]
+        names = []
+        for d in dims:
+            if isinstance(d, str):
+                names.append(d)
+            elif isinstance(d, SHAPE_TYPES):
+                names.extend(d.names)
+            elif callable(d):
+                names.extend(d(self).names)
+            else:
+                raise ValueError(f"Format not understood for Shape.only(): {dims}")
+        names = [d for d in names if d in self.dims]
+        if not names:
+            return EMPTY_SHAPE
+        if len(names) == 1:
+            return self.dims[names[0]]
+        if reorder:
+            return PureShape(self.dim_type, {n: self.dims[n] for n in names})
+        else:
+            return PureShape(self.dim_type, {n: dim for n, dim in self.dims.items() if n in names})
+
+    def __add__(self, other):
+        if isinstance(other, int):
+            assert self.dim_type != BATCH_DIM, f"Shape arithmetic not allowed for batch dims {self}"
+            return PureShape(self.dim_type, {n: dim + other for n, dim in self.dims.items()})
+        return concat_shapes_(self, other)
+
+    def __sub__(self, other):
+        if isinstance(other, int):
+            assert self.dim_type != BATCH_DIM, f"Shape arithmetic not allowed for batch dims {self}"
+            return PureShape(self.dim_type, {n: dim - other for n, dim in self.dims.items()})
+        return self.without(other)
+
+    def without(self, dims: 'DimFilter'):
+        if dims is None or not self.dims:  # subtract none
+            return self
+        elif callable(dims):
+            dims = dims(self)
+        if isinstance(dims, (str, SHAPE_TYPES)):
+            names = parse_dim_order(dims)
+            dims = {n: dim for n, dim in self.dims.items() if n not in names}
+            return next(iter(dims.values())) if len(dims) == 1 else PureShape(self.dim_type, dims)
+        if isinstance(dims, (tuple, list, set)) and all([isinstance(d, str) for d in dims]):
+            dims = {n: dim for n, dim in self.dims.items() if n not in dims}
+            return next(iter(dims.values())) if len(dims) == 1 else PureShape(self.dim_type, dims)
+        elif isinstance(dims, (tuple, list, set)):
+            result = self
+            for wo in dims:
+                result = result.without(wo)
+            return result
+        else:
+            raise ValueError(dims)
+
+    def meshgrid(self, names=False):
+        assert self.is_uniform, f"Shape.meshgrid() is currently not supported for non-uniform tensors, {self}"
+        indices = [0] * len(self.dims)
         while True:
             if names:
                 yield {dim: (names[index] if names is not None else index) for dim, index, names in zip(self.names, indices, self.item_names)}
@@ -1398,51 +1515,490 @@ class Shape:
             else:
                 return
 
-    def first_index(self, names=False):
-        return next(iter(self.meshgrid(names=names)))
+    def with_size(self, size, keep_item_names=True):
+        raise AssertionError(f"Shape.with_size() is only defined for shapes of rank 1 but got {self}")
 
-    def are_adjacent(self, dims: Union[str, tuple, list, set, 'Shape']):
-        indices = self.indices(dims)
-        return (max(indices) - min(indices)) == len(dims) - 1
+    def with_dim_size(self, dim: Union[str, 'Shape'], size: Union[int, 'math.Tensor', str, tuple, list], keep_item_names=True):
+        name = dim.name if isinstance(dim, SHAPE_TYPES) else dim
+        dims = dict(self.dims)
+        dims[dim] = dims[dim].with_size(size)
+        return PureShape(self.dim_type, {n: dim.with_size(size) if n == name else dim for n, dim in self.dims.items()})
 
-    def __add__(self, other):
-        if isinstance(other, Shape) and self.isdisjoint(other):
-            return concat_shapes(self, other)
-        return self._op2(other, lambda s, o: s + o, 0)
+    def with_sizes(self, sizes: Union[Sequence[int], Sequence[Tuple[str, ...]], 'Shape', int], keep_item_names=True):
+        if not self.dims:
+            assert not sizes or isinstance(sizes, SHAPE_TYPES)
+            return self
+        if isinstance(sizes, int):
+            sizes = (sizes,) * len(self.dims)
+        elif isinstance(sizes, SHAPE_TYPES):
+            sizes = tuple([sizes.get_size(dim.name) for dim in self.dims.values()])
+        dims = {dim.name: dim.with_size(size, keep_item_names) for dim, size in zip(self.dims.values(), sizes)}
+        return PureShape(self.dim_type, dims)
 
-    def __radd__(self, other):
-        return self._op2(other, lambda s, o: o + s, 0)
+    def without_sizes(self):
+        return PureShape(self.dim_type, {n: dim.without_sizes() for n, dim in self.dims.items()})
 
-    def __sub__(self, other):
-        if isinstance(other, (str, Shape, tuple, list, set)) or callable(other):
-            return self.without(other)
-        return self._op2(other, lambda s, o: s - o, 0)
+    def flipped(self, dims: Union[List[str], Tuple[str]]):
+        dims = {n: dim.flipped(dims) for n, dim in self.dims.items()}
+        return PureShape(self.dim_type, dims)
 
-    def __rsub__(self, other):
-        return self._op2(other, lambda s, o: o - s, 0)
-
-    def __mul__(self, other):
-        return self._op2(other, lambda s, o: s * o, 1)
-
-    def __rmul__(self, other):
-        return self._op2(other, lambda s, o: o * s, 1)
-
-    def _op2(self, other, fun, default: int):
-        if isinstance(other, int):
-            return Shape(tuple([fun(s, other) for s in self.sizes]), self.names, self.types, (None,) * self.rank)
+    def replace(self, dims: Union['Shape', str, tuple, list], new: 'Shape'):
+        dims = parse_dim_order(dims)
+        if len(dims) == len(new):
+            dim_list = list(self.dims.values())
+            for old, new_dim in zip(dims, new):
+                new_dim = self.dims[old]._replace(new_dim)
+                dim_list[self.index(old)] = new_dim
+        elif len(new) > 1 and len(dims) == 1:
+            dim_list = list(self.dims.values())
+            i = self.index(dims[0])
+            dim_list[i:i+1] = new
         else:
-            return NotImplemented
+            assert len(new) == 1
+            if len(dims) == len(self.dims):
+                return new
+            i0 = self.index(dims[0])
+            dim_list = [d for n, d in self.dims.items() if n not in dims]
+            dim_list.insert(i0, new)
+        return concat_shapes_(*dim_list)
+
+    def replace_selection(self, names: Sequence[str], new: Shape):
+        dim_list = list(self.dims.values())
+        for old_name, new_dim in zip(names, new):
+            if old_name in self.dims:
+                new_dim = self.dims[old_name]._replace(new_dim)
+                dim_list[self.index(old_name)] = new_dim
+        return concat_shapes_(*dim_list)
+
+    def as_batch(self):
+        dims = [dim.as_batch() for dim in self.dims.values()]
+        return PureShape(BATCH_DIM, {dim.name: dim for dim in dims})
+    def as_dual(self):
+        dims = [dim.as_dual() for dim in self.dims.values()]
+        return PureShape(DUAL_DIM, {dim.name: dim for dim in dims})
+    def as_instance(self):
+        dims = [dim.as_instance() for dim in self.dims.values()]
+        return PureShape(INSTANCE_DIM, {dim.name: dim for dim in dims})
+    def as_spatial(self):
+        dims = [dim.as_spatial() for dim in self.dims.values()]
+        return PureShape(SPATIAL_DIM, {dim.name: dim for dim in dims})
+    def as_channel(self):
+        dims = [dim.as_channel() for dim in self.dims.values()]
+        return PureShape(CHANNEL_DIM, {dim.name: dim for dim in dims})
+    def as_type(self, new_type: Callable):
+        return {batch: self.as_batch, dual: self.as_dual, instance: self.as_instance, spatial: self.as_spatial, channel: self.as_channel}[new_type]()
+
+
+@dataclass(frozen=True, **_dataclass_kwargs)
+class MixedShape:
+    batch: Union[PureShape, Dim]
+    dual: Union[PureShape, Dim]
+    instance: Union[PureShape, Dim]
+    spatial: Union[PureShape, Dim]
+    channel: Union[PureShape, Dim]
+    dims: Dict[str, Dim]  # dim order
+
+    def __post_init__(self):
+        assert self
+
+    def __len__(self):
+        return len(self.dims)
+    @property
+    def rank(self):
+        return len(self.dims)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.dims
+
+    @property
+    def volume(self) -> Union[int, None]:
+        result = 1
+        for size in self.sizes:
+            if size is None:
+                return None
+            result *= size
+        from ._tensors import Tensor
+        if not isinstance(result, Tensor):
+            return result
+        result /= self.non_uniform_shape.volume  # We summed up the items -> undo multiplication
+        return int(result.sum)
+
+    @property
+    def names(self):
+        return tuple(self.dims)
+    @property
+    def name_list(self):
+        return list(self.dims)
+    @property
+    def sizes(self) -> tuple:
+        return sum([dim.sizes for dim in self.dims.values()], ())
+    @property
+    def types(self):
+        return [d.type for d in self.dims.values()]
+    @property
+    def dim_types(self):
+        return [d.dim_type for d in self.dims.values()]
+    @property
+    def item_names(self):
+        return sum([dim.item_names for dim in self.dims.values()], ())
+
+    @property
+    def untyped_dict(self):
+        return {k: v for dim in self.dims.values() for k, v in dim.untyped_dict.items()}
+
+    @property
+    def name(self):
+        assert len(self.dims) == 1, f"Shape.name is only defined for shapes of rank 1 but has dims {self}"
+        return next(iter(self.dims))
+    @property
+    def size(self):
+        assert len(self.dims) == 1, f"Shape.size is only defined for shapes of rank 1 but has dims {self}"
+        return next(iter(self.dims.values())).size
+    @property
+    def type(self) -> str:
+        assert len(self.dims) == 1, f"Shape.type is only defined for shapes of rank 1 but has dims {self}"
+        return next(iter(self.dims.values())).type
+    @property
+    def dim_type(self):
+        assert len(self.dims) == 1, f"Shape.dim_type is only defined for shapes of rank 1 but has dims {self}"
+        return next(iter(self.dims.values())).dim_type
+
+    @property
+    def is_uniform(self) -> bool:
+        return all(dim.is_uniform for dim in self.dims.values())
+    @property
+    def is_non_uniform(self) -> bool:
+        return any(dim.is_non_uniform for dim in self.dims.values())
+    @property
+    def non_uniform(self) -> 'Shape':
+        result = EMPTY_SHAPE
+        for dim in self.dims.values():
+            if not isinstance(dim.size, int):
+                result &= dim
+        return result
+    @property
+    def non_uniform_shape(self):
+        result = EMPTY_SHAPE
+        for size in self.sizes:
+            if not isinstance(size, int):
+                result &= size.shape
+        return result
+
+    @property
+    def singleton(self):
+        dims = {n: dim for n, dim in self.dims.items() if _size_equal(dim.size, 1)}
+        return next(iter(dims.values())) if len(dims) == 1 else merge_shapes(dims)
+
+    @property
+    def well_defined(self):
+        for size in self.sizes:
+            if size is None:
+                return False
+        return True
+    @property
+    def defined(self):
+        return concat_shapes_(*[dim for dim in self.dims.values() if dim.size is not None])
+    @property
+    def undefined(self):
+        return concat_shapes_(*[dim for dim in self.dims.values() if dim.size is None])
+
+    @property
+    def batch_rank(self) -> int:
+        return len(self.batch)
+    @property
+    def instance_rank(self) -> int:
+        return len(self.instance)
+    @property
+    def spatial_rank(self) -> int:
+        return len(self.spatial)
+    @property
+    def dual_rank(self) -> int:
+        return len(self.dual)
+    @property
+    def channel_rank(self) -> int:
+        return len(self.channel)
+
+    @property
+    def primal(self):
+        dims = {**self.instance.dims, **self.spatial.dims, **self.channel.dims}
+        return MixedShape(EMPTY_SHAPE, EMPTY_SHAPE, self.instance, self.spatial, self.channel, dims) if dims else EMPTY_SHAPE
+    @property
+    def non_primal(self):
+        dims = {**self.batch.dims, **self.dual.dims}
+        return MixedShape(self.batch, self.dual, EMPTY_SHAPE, EMPTY_SHAPE, EMPTY_SHAPE, dims) if dims else EMPTY_SHAPE
+
+    @property
+    def non_batch(self):
+        dims = {n: dim for n, dim in self.dims.items() if dim.dim_type != BATCH_DIM}
+        return MixedShape(EMPTY_SHAPE, self.dual, self.instance, self.spatial, self.channel, dims) if dims else EMPTY_SHAPE
+    @property
+    def non_dual(self):
+        dims = {n: dim for n, dim in self.dims.items() if dim.dim_type != DUAL_DIM}
+        return MixedShape(self.batch, EMPTY_SHAPE, self.instance, self.spatial, self.channel, dims) if dims else EMPTY_SHAPE
+    @property
+    def non_instance(self):
+        dims = {n: dim for n, dim in self.dims.items() if dim.dim_type != INSTANCE_DIM}
+        return MixedShape(self.batch, self.dual, EMPTY_SHAPE, self.spatial, self.channel, dims) if dims else EMPTY_SHAPE
+    @property
+    def non_spatial(self):
+        dims = {n: dim for n, dim in self.dims.items() if dim.dim_type != SPATIAL_DIM}
+        return MixedShape(self.batch, self.dual, self.instance, EMPTY_SHAPE, self.channel, dims) if dims else EMPTY_SHAPE
+    @property
+    def non_channel(self):
+        dims = {n: dim for n, dim in self.dims.items() if dim.dim_type != CHANNEL_DIM}
+        return MixedShape(self.batch, self.dual, self.instance, self.spatial, EMPTY_SHAPE, dims) if dims else EMPTY_SHAPE
+
+    def __repr__(self):
+        return '(' + ', '.join([repr(dim)[1:-1] for dim in self.dims.values()]) + ')'
+
+    def __eq__(self, other):
+        if isinstance(other, (Dim, PureShape)):
+            pure = getattr(self, other.dim_type)
+            if len(pure) != len(self.dims):
+                return False
+            return pure == other
+        if isinstance(other, MixedShape):
+            return self.dims == other.dims
+        return False
 
     def __hash__(self):
-        return hash(self.names)
+        return hash(tuple(self.dims.values()))
 
-    @staticmethod
-    def __stack__(values, dim: 'Shape', **kwargs):
-        return shape_stack(dim, *values)
+    def __contains__(self, item):
+        if isinstance(item, Dim):
+            return item.name in self.dims
+        if isinstance(item, (str, tuple, list)):
+            dims = parse_dim_order(item)
+            return all(dim in self.dims for dim in dims)
+        return all([d in self.dims for d in item.names])
+
+    def index(self, dim: Union[str, 'Shape', None]) -> Optional[int]:
+        if dim is None:
+            return None
+        elif isinstance(dim, str):
+            if dim not in self.dims:
+                raise ValueError(f"Shape {self} has no dimension '{dim}'")
+            return self.names.index(dim)
+        elif isinstance(dim, SHAPE_TYPES):
+            assert len(dim) == 1, f"index() requires a single dimension as input but got {dim}. Use indices() for multiple dimensions."
+            return self.names.index(dim.name)
+        raise ValueError(f"index() requires a single dimension as input but got {dim}")
+
+    def indices(self, names: Sequence[str]) -> Tuple[int, ...]:
+        order = self.names
+        return tuple(order.index(n) for n in names)
+
+    def __getitem__(self, selection):
+        if isinstance(selection, int):
+            return list(self.dims.values())[selection]
+        elif isinstance(selection, slice):
+            return concat_shapes_(*list(self.dims.values())[selection])
+        elif isinstance(selection, str):
+            if ',' in selection:
+                selection = [self.index(s.strip()) for s in selection.split(',')]
+            else:
+                selection = self.index(selection)
+            return self[selection]
+        elif isinstance(selection, SHAPE_TYPES):
+            selection = selection.names
+        if isinstance(selection, (tuple, list)):
+            selection = [self.names[sel] if isinstance(sel, int) else sel for sel in selection]
+            if DEBUG_CHECKS:
+                assert all(isinstance(s, str) for s in selection)
+            return concat_shapes_(*[self.dims[n] for n in selection])
+        raise AssertionError("Can only access shape elements as shape[int], shape[str], shape[slice], shape[Sequence] or shape[Shape]")
+
+    def __iter__(self):
+        return iter(self.dims.values())
+
+    def get_size(self, dim: Union[str, 'Shape'], default=None):
+        name = dim.name if isinstance(dim, SHAPE_TYPES) else dim
+        if default is None:
+            return self.dims[name].size
+        else:
+            return self.dims[name].size if name in self.dims else default
+
+    def get_dim_type(self, dim: str) -> str:
+        return self.dims[dim].dim_type
+
+    def get_item_names(self, dim: Union[str, 'Shape'], fallback_spatial=False) -> Union[tuple, None]:
+        name = dim.name if isinstance(dim, SHAPE_TYPES) else dim
+        dim = self.dims[name]
+        if dim.slice_names is not None:
+            return dim.slice_names
+        elif fallback_spatial and dim.dim_type == CHANNEL_DIM and _size_equal(len(self.spatial), dim.size):
+            return self.spatial.names
+        return None
+
+    def __and__(self, other):
+        if other is dual:
+            return self & self.primal.as_dual()
+        if isinstance(other, (Dim, PureShape)):
+            if not other:
+                return self
+            group = getattr(self, other.dim_type)
+            merged = pure_merge(group, other, allow_varying_sizes=False)
+            dims = {**self.dims, **merged.dims}
+            return replace(self, dims=dims, **{other.dim_type: merged})
+        return merge_shapes(self, other)
+
+    __rand__ = __and__
+
+    def is_compatible(self, other: Shape):
+        return all(dim.is_compatible(other) for dim in self.dims.values())
+
+    def isdisjoint(self, other) -> bool:
+        if isinstance(other, Dim):
+            return other.name not in self.dims
+        if isinstance(other, PureShape):
+            return other.isdisjoint(getattr(self, other.dim_type))
+        if isinstance(other, MixedShape):
+            return self.dims.keys().isdisjoint(other.dims)
+        return self.dims.keys().isdisjoint(set(parse_dim_order(other)))
+
+    @property
+    def __empty__(self):
+        return EMPTY_SHAPE
+
+    def only(self, dims: 'DimFilter', reorder=False):
+        if isinstance(dims, (Dim, PureShape)):
+            return getattr(self, dims.dim_type).only(dims, reorder=reorder)
+        if callable(dims):
+            return dims(self)
+        if isinstance(dims, str) and ',' not in dims:
+            return self.dims.get(dims, EMPTY_SHAPE)
+        if reorder:
+            result = [self.only(sel) for sel in parse_dim_order(dims)]
+            return concat_shapes_(*result)
+        return concat_shapes_(*[dim for dim in self.dims.values() if dim.only(dims)])
+
+    def __add__(self, other):
+        if isinstance(other, int):
+            assert not self.batch, f"Shape arithmetic not allowed for batch dims {self}"
+            return concat_shapes_(*[dim + other for dim in self.dims.values()])
+        return concat_shapes_(self, other)
+
+    def __sub__(self, other):
+        if isinstance(other, int):
+            assert not self.batch, f"Shape arithmetic not allowed for batch dims {self}"
+            return concat_shapes_(*[dim - other for dim in self.dims.values()])
+        return self.without(other)
+
+    def without(self, dims: 'DimFilter'):
+        b = self.batch.without(dims)
+        d = self.dual.without(dims)
+        i = self.instance.without(dims)
+        s = self.spatial.without(dims)
+        c = self.channel.without(dims)
+        type_count = bool(b) + bool(d) + bool(i) + bool(s) + bool(c)
+        if type_count == 0:
+            return EMPTY_SHAPE
+        if type_count == 1:
+            return b if b else (d if d else (i if i else (s if s else c)))  # if only one has entries, return it
+        dims = {n: dim for n, dim in self.dims.items() if dim.without(dims)}
+        return MixedShape(b, d, i, s, c, dims)
+
+    def meshgrid(self, names=False):
+        assert self.is_uniform, f"Shape.meshgrid() is currently not supported for non-uniform tensors, {self}"
+        indices = [0] * len(self.dims)
+        while True:
+            if names:
+                yield {dim: (names[index] if names is not None else index) for dim, index, names in zip(self.names, indices, self.item_names)}
+            else:
+                yield {dim: index for dim, index in zip(self.names, indices)}
+            for i in range(self.rank-1, -1, -1):
+                indices[i] = (indices[i] + 1) % self.sizes[i]
+                if indices[i] != 0:
+                    break
+            else:
+                return
+
+    def with_size(self, size, keep_item_names=True):
+        assert len(self.dims) == 1
+        return next(iter(self.dims.values())).with_size(size, keep_item_names=keep_item_names)
+
+    def with_dim_size(self, dim: Union[str, 'Shape'], size: Union[int, 'math.Tensor', str, tuple, list], keep_item_names=True):
+        dim = dim.name if isinstance(dim, SHAPE_TYPES) else dim
+        dims = dict(self.dims)
+        dims[dim] = dims[dim].with_size(size, keep_item_names=keep_item_names)
+        return concat_shapes_(*[dims[n] for n in self.dims])
+
+    def with_sizes(self, sizes: Union[Sequence[int], Sequence[Tuple[str, ...]], 'Shape', int], keep_item_names=True):
+        if isinstance(sizes, (int, SHAPE_TYPES)):
+            b = self.batch.with_sizes(sizes)
+            d = self.dual.with_sizes(sizes)
+            i = self.instance.with_sizes(sizes)
+            s = self.spatial.with_sizes(sizes)
+            c = self.channel.with_sizes(sizes)
+        else:
+            assert len(sizes) == len(self.dims)
+            sizes = {n: s for n, s in zip(self.dims, sizes)}
+            b = self.batch.with_sizes([sizes[n] for n in self.batch.names])
+            d = self.dual.with_sizes([sizes[n] for n in self.dual.names])
+            i = self.instance.with_sizes([sizes[n] for n in self.instance.names])
+            s = self.spatial.with_sizes([sizes[n] for n in self.spatial.names])
+            c = self.channel.with_sizes([sizes[n] for n in self.channel.names])
+        dims = {**b.dims, **d.dims, **i.dims, **s.dims, **c.dims}
+        return MixedShape(b, d, i, s, c, {n: dims[n] for n in self.dims})
+
+    def without_sizes(self):
+        return concat_shapes_(*[dim.without_sizes() for dim in self.dims.values()])
+
+    def flipped(self, dims: Union[List[str], Tuple[str]]):
+        return concat_shapes_(*[dim.flipped(dims) for n, dim in self.dims.items()])
+
+    def replace(self, dims: Union['Shape', str, tuple, list], new: 'Shape'):
+        dims = parse_dim_order(dims)
+        dim_list = list(self.dims.values())
+        if len(dims) == len(new):
+            for old, new_dim in zip(dims, new):
+                new_dim = self.dims[old]._replace(new_dim)
+                dim_list[self.index(old)] = new_dim
+        elif len(new) > 1 and len(dims) == 1:
+            i = self.index(dims[0])
+            dim_list[i:i+1] = new
+        else:
+            if len(dims) == len(self.dims):
+                return new
+            i0 = self.index(dims[0])
+            dim_list = [d for n, d in self.dims.items() if n not in dims]
+            dim_list.insert(i0, new)
+        return concat_shapes_(*dim_list)
+
+    def replace_selection(self, names: Sequence[str], new: Shape):
+        if DEBUG_CHECKS:
+            assert all(isinstance(n, str) for n in names)
+        dim_list = list(self.dims.values())
+        for old_name, new_dim in zip(names, new):
+            if old_name in self.dims:
+                new_dim = self.dims[old_name].replace_selection(old_name, new_dim)
+                dim_list[self.index(old_name)] = new_dim
+        return concat_shapes_(*dim_list)
+
+    def as_batch(self):
+        dims = [dim.as_batch() for dim in self.dims.values()]
+        return PureShape(BATCH_DIM, {dim.name: dim for dim in dims}) if len(dims) > 1 else dims[0]
+    def as_dual(self):
+        dims = [dim.as_dual() for dim in self.dims.values()]
+        return PureShape(DUAL_DIM, {dim.name: dim for dim in dims}) if len(dims) > 1 else dims[0]
+    def as_instance(self):
+        dims = [dim.as_instance() for dim in self.dims.values()]
+        return PureShape(INSTANCE_DIM, {dim.name: dim for dim in dims}) if len(dims) > 1 else dims[0]
+    def as_spatial(self):
+        dims = [dim.as_spatial() for dim in self.dims.values()]
+        return PureShape(SPATIAL_DIM, {dim.name: dim for dim in dims}) if len(dims) > 1 else dims[0]
+    def as_channel(self):
+        dims = [dim.as_channel() for dim in self.dims.values()]
+        return PureShape(CHANNEL_DIM, {dim.name: dim for dim in dims}) if len(dims) > 1 else dims[0]
+    def as_type(self, new_type: Callable):
+        return {batch: self.as_batch, dual: self.as_dual, instance: self.as_instance, spatial: self.as_spatial, channel: self.as_channel}[new_type]()
 
 
-EMPTY_SHAPE = Shape((), (), (), ())
+EMPTY_SHAPE = PureShape('__empty__', {})
 """ Empty shape, `()` """
+
+SHAPE_TYPES = (Dim, PureShape, MixedShape)
 
 
 class IncompatibleShapes(Exception):
@@ -1468,7 +2024,7 @@ def parse_dim_names(obj: Union[str, Sequence[str], Shape], count: int) -> tuple:
                 result.append(part)
         assert len(result) == count, f"Number of specified names in '{obj}' does not match number of dimensions ({count})"
         return tuple(result)
-    elif isinstance(obj, Shape):
+    elif isinstance(obj, SHAPE_TYPES):
         assert len(obj) == count, f"Number of specified names in {obj} does not match number of dimensions ({count})"
         return obj.names
     elif isinstance(obj, Sequence):
@@ -1477,12 +2033,12 @@ def parse_dim_names(obj: Union[str, Sequence[str], Shape], count: int) -> tuple:
     raise ValueError(obj)
 
 
-def parse_dim_order(order: Union[str, tuple, list, Shape, None]) -> Union[tuple, None]:
-    if isinstance(order, Shape):
+def parse_dim_order(order: Union[str, tuple, list, Shape]) -> Sequence[str]:
+    if isinstance(order, SHAPE_TYPES):
         return order.names
-    if isinstance(order, list):
-        return tuple(order)
-    elif isinstance(order, tuple):
+    if isinstance(order, str) and ',' not in order:
+        return order,
+    if isinstance(order, (tuple,list)):
         return order
     elif isinstance(order, str):
         parts = order.split(',')
@@ -1491,19 +2047,17 @@ def parse_dim_order(order: Union[str, tuple, list, Shape, None]) -> Union[tuple,
     raise ValueError(order)
 
 
-def _construct_shape(dim_type: str, *args, **dims):
-    sizes = ()
-    names = []
-    item_names = ()
+def _construct_shape(dim_type: str, *args, **kwargs):
+    dims = {}
     for arg in args:
         parts = [s.strip() for s in arg.split(',')]
         for name in parts:
-            assert name not in names, f"Duplicate dimension name {name}"
-            sizes += (None,)
-            names.append(name)
-            item_names += (None,)
-    for name, size in dims.items():
-        assert name not in names, f"Duplicate dimension name {name}"
+            name = _apply_prefix(name, dim_type)
+            assert name not in dims, f"Duplicate dimension name {name}"
+            dims[name] = Dim(name, None, dim_type, None)
+    for name, size in kwargs.items():
+        name = _apply_prefix(name, dim_type)
+        assert name not in dims, f"Duplicate dimension name '{name}'"
         if isinstance(size, str):
             items = tuple([i.strip() for i in size.split(',')])
             if not items[-1]:
@@ -1513,7 +2067,7 @@ def _construct_shape(dim_type: str, *args, **dims):
             assert all(isinstance(s, str) for s in size), f"Item names must all be of type 'str' but got '{size}'"
             items = tuple(size)
             size = len(items)
-        elif isinstance(size, Shape):
+        elif isinstance(size, SHAPE_TYPES):
             items = size.names
             size = size.rank
         elif size is None or isinstance(size, int):
@@ -1529,11 +2083,8 @@ def _construct_shape(dim_type: str, *args, **dims):
                     size = int(size)
                 except ValueError:
                     raise ValueError(f"Cannot construct dimension from {type(size).__name__}. Only int, tuple, list, str or Shape allowed. Got {size}")
-        names.append(name)
-        sizes += (size,)
-        item_names += (items,)
-    names = tuple(_apply_prefix(name, dim_type) for name in names)
-    return math.Shape(sizes, names, (dim_type,) * len(sizes), item_names)
+        dims[name] = Dim(name, size, dim_type, items)
+    return next(iter(dims.values())) if len(dims) == 1 else PureShape(dim_type, dims)
 
 
 def _apply_prefix(name: str, dim_type: str):
@@ -1558,45 +2109,42 @@ def shape(obj, allow_unshaped=False) -> Shape:
     Returns:
         `Shape`
     """
-    from .magic import PhiTreeNode, Shaped, BoundDim
-    if isinstance(obj, Shape):
+    if isinstance(obj, SHAPE_TYPES):
         return obj
-    elif isinstance(obj, BoundDim):
-        return shape(obj.obj)[obj.name]
-    elif hasattr(obj, '__shape__'):
-        return obj.__shape__()
-    elif hasattr(obj, 'shape') and isinstance(obj.shape, Shape):
+    if hasattr(obj, 'shape') and isinstance(obj.shape, SHAPE_TYPES):
         return obj.shape
-    elif isinstance(obj, (int, float, complex, bool)):
+    if hasattr(obj, '__shape__'):
+        return obj.__shape__()
+    if isinstance(obj, (Number, bool)):
         return EMPTY_SHAPE
-    elif isinstance(obj, (tuple, list)) and all(isinstance(item, (int, float, complex, bool)) for item in obj):
+    if obj is None:
+        return EMPTY_SHAPE
+    if isinstance(obj, (tuple, list)) and all(isinstance(item, (int, float, complex, bool)) for item in obj):
         return channel(vector=len(obj))
-    elif isinstance(obj, (Number, bool)):
-        return EMPTY_SHAPE
-    elif obj is None:
-        return EMPTY_SHAPE
-    elif isinstance(obj, (tuple, list)) and all(isinstance(item, (PhiTreeNode, Shaped)) for item in obj):
+    from .magic import PhiTreeNode, Shaped, BoundDim
+    if isinstance(obj, BoundDim):
+        return shape(obj.obj)[obj.name]
+    if isinstance(obj, (tuple, list)) and all(isinstance(item, (PhiTreeNode, Shaped)) for item in obj):
         return merge_shapes(*obj, allow_varying_sizes=True)
     if isinstance(obj, dict) and all(isinstance(item, (PhiTreeNode, Shaped)) for item in obj):
         return merge_shapes(*obj.values(), allow_varying_sizes=True)
-    elif isinstance(obj, PhiTreeNode):
+    if isinstance(obj, PhiTreeNode):
         from ._magic_ops import all_attributes
         return merge_shapes(*[getattr(obj, a) for a in all_attributes(obj, assert_any=True)], allow_varying_sizes=True)
-    else:
-        from ..backend import choose_backend, NoBackendFound
-        try:
-            backend = choose_backend(obj)
-            shape_tuple = backend.staticshape(obj)
-            if len(shape_tuple) == 0:
-                return EMPTY_SHAPE
-            elif len(shape_tuple) == 1:
-                return channel('vector')
-            else:
-                raise ValueError(f"Cannot auto-complete shape of {backend} tensor with shape {shape_tuple}. Only 0D and 1D tensors have a Φ-ML shape by default.")
-        except NoBackendFound:
-            if allow_unshaped:
-                return EMPTY_SHAPE
-            raise ValueError(f'shape() requires Shaped or Shape argument but got {type(obj)}')
+    from ..backend import choose_backend, NoBackendFound
+    try:
+        backend = choose_backend(obj)
+        shape_tuple = backend.staticshape(obj)
+        if len(shape_tuple) == 0:
+            return EMPTY_SHAPE
+        elif len(shape_tuple) == 1:
+            return channel('vector')
+        else:
+            raise ValueError(f"Cannot auto-complete shape of {backend} tensor with shape {shape_tuple}. Only 0D and 1D tensors have a Φ-ML shape by default.")
+    except NoBackendFound:
+        if allow_unshaped:
+            return EMPTY_SHAPE
+        raise ValueError(f'shape() requires Shaped or Shape argument but got {type(obj)}')
 
 
 def spatial(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Shape:
@@ -1633,12 +2181,10 @@ def spatial(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Sha
     from .magic import Shaped
     if all(isinstance(arg, str) for arg in args) or dims:
         return _construct_shape(SPATIAL_DIM, *args, **dims)
-    elif len(args) == 1 and isinstance(args[0], Shape):
+    elif len(args) == 1 and isinstance(args[0], SHAPE_TYPES):
         return args[0].spatial
-    elif len(args) == 1 and isinstance(args[0], Shaped):
-        return shape(args[0]).spatial
-    else:
-        raise AssertionError(f"spatial() must be called either as a selector spatial(Shape) or spatial(Tensor) or as a constructor spatial(*names, **dims). Got *args={args}, **dims={dims}")
+    assert len(args) == 1, f"spatial() must be called either as a selector spatial(Shape) or spatial(Tensor) or as a constructor spatial(*names, **dims). Got *args={args}, **dims={dims}"
+    return shape(args[0]).spatial
 
 
 def channel(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Shape:
@@ -1675,12 +2221,10 @@ def channel(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Sha
     from .magic import Shaped
     if all(isinstance(arg, str) for arg in args) or dims:
         return _construct_shape(CHANNEL_DIM, *args, **dims)
-    elif len(args) == 1 and isinstance(args[0], Shape):
+    elif len(args) == 1 and isinstance(args[0], SHAPE_TYPES):
         return args[0].channel
-    elif len(args) == 1 and isinstance(args[0], Shaped):
-        return shape(args[0]).channel
-    else:
-        raise AssertionError(f"channel() must be called either as a selector channel(Shape) or channel(Tensor) or as a constructor channel(*names, **dims). Got *args={args}, **dims={dims}")
+    assert len(args) == 1, f"channel() must be called either as a selector channel(Shape) or channel(Tensor) or as a constructor channel(*names, **dims). Got *args={args}, **dims={dims}"
+    return shape(args[0]).channel
 
 
 def batch(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Shape:
@@ -1717,12 +2261,10 @@ def batch(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Shape
     from .magic import Shaped
     if all(isinstance(arg, str) for arg in args) or dims:
         return _construct_shape(BATCH_DIM, *args, **dims)
-    elif len(args) == 1 and isinstance(args[0], Shape):
+    elif len(args) == 1 and isinstance(args[0], SHAPE_TYPES):
         return args[0].batch
-    elif len(args) == 1 and isinstance(args[0], Shaped):
-        return shape(args[0]).batch
-    else:
-        raise AssertionError(f"batch() must be called either as a selector batch(Shape) or batch(Tensor) or as a constructor batch(*names, **dims). Got *args={args}, **dims={dims}")
+    assert len(args) == 1, f"batch() must be called either as a selector batch(Shape) or batch(Tensor) or as a constructor batch(*names, **dims). Got *args={args}, **dims={dims}"
+    return shape(args[0]).batch
 
 
 def instance(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Shape:
@@ -1759,12 +2301,10 @@ def instance(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Sh
     from .magic import Shaped
     if all(isinstance(arg, str) for arg in args) or dims:
         return _construct_shape(INSTANCE_DIM, *args, **dims)
-    elif len(args) == 1 and isinstance(args[0], Shape):
+    elif len(args) == 1 and isinstance(args[0], SHAPE_TYPES):
         return args[0].instance
-    elif len(args) == 1 and isinstance(args[0], Shaped):
-        return shape(args[0]).instance
-    else:
-        raise AssertionError(f"instance() must be called either as a selector instance(Shape) or instance(Tensor) or as a constructor instance(*names, **dims). Got *args={args}, **dims={dims}")
+    assert len(args) == 1, f"instance() must be called either as a selector instance(Shape) or instance(Tensor) or as a constructor instance(*names, **dims). Got *args={args}, **dims={dims}"
+    return shape(args[0]).instance
 
 
 def dual(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Shape:
@@ -1810,13 +2350,11 @@ def dual(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Shape:
     from .magic import Shaped
     if all(isinstance(arg, str) for arg in args) or dims:
         return _construct_shape(DUAL_DIM, *args, **dims)
-    elif len(args) == 1 and isinstance(args[0], Shape):
+    elif len(args) == 1 and isinstance(args[0], SHAPE_TYPES):
         return args[0].dual
-    elif len(args) == 1 and isinstance(args[0], Shaped):
-        return shape(args[0]).dual
-    else:
-        raise AssertionError(f"dual() must be called either as a selector dual(Shape) or dual(Tensor) or as a constructor dual(*names, **dims). Got *args={args}, **dims={dims}")
-    
+    assert len(args) == 1, f"dual() must be called either as a selector dual(Shape) or dual(Tensor) or as a constructor dual(*names, **dims). Got *args={args}, **dims={dims}"
+    return shape(args[0]).dual
+
 
 def auto(spec: Union[str, Shape], default_type: Callable = None) -> Shape:
     """
@@ -1833,7 +2371,7 @@ def auto(spec: Union[str, Shape], default_type: Callable = None) -> Shape:
     Returns:
         `Shape`
     """
-    if isinstance(spec, Shape):
+    if isinstance(spec, SHAPE_TYPES):
         return spec  # allow multi-dim Shapes as well, as the main application is stacking
     assert isinstance(spec, str), f"spec must be a Shape or str but got {type(spec)}"
     assert ',' not in spec, f"auto dim only supported for single dimensions"
@@ -1856,68 +2394,63 @@ SPEC_PATTERNS = {
 
 
 def parse_shape_spec(input_string, default_type: Callable = None) -> Shape:
-    results = []
+    dims = []
     pos = 0
     while pos < len(input_string):
         if match := SPEC_PATTERNS['name_type_items'].match(input_string, pos):
-            tilde, name, type_, values = match.groups()
-            if tilde and type_ not in ('d', 'dual'):
+            tilde, n, t, values = match.groups()
+            if tilde and t not in ('d', 'dual'):
                 raise InvalidShapeSpec(input_string, f"Dimension names starting with ~ must be of type dual. Failed at index {pos}: {input_string[pos:]}")
-            elif not tilde and type_ in ('d', 'dual'):
+            elif not tilde and t in ('d', 'dual'):
                 raise InvalidShapeSpec(input_string, f"Dual dims must start with ~. Failed at index {pos}: {input_string[pos:]}")
             items = [n.strip() for n in values.split(',') if n.strip()]
-            results.append({'name': '~' + name if tilde else name, 'type': type_, 'values': items})
+            dims.append(Dim('~' + n if tilde else n, len(items), INV_CHAR[t] if len(t) == 1 else t, tuple(items)))
             pos = match.end() + 1
         elif match := SPEC_PATTERNS['name_type'].match(input_string, pos):
-            tilde, name, type_ = match.groups()
-            if tilde and type_ not in ('d', 'dual'):
+            tilde, n, t = match.groups()
+            if tilde and t not in ('d', 'dual'):
                 raise InvalidShapeSpec(input_string, f"Dimension names starting with ~ must be of type dual. Failed at index {pos}: {input_string[pos:]}")
-            elif not tilde and type_ in ('d', 'dual'):
+            elif not tilde and t in ('d', 'dual'):
                 raise InvalidShapeSpec(input_string, f"Dual dims must start with ~. Failed at index {pos}: {input_string[pos:]}")
             # Check if the next character is an equal sign followed by parentheses
             next_char_pos = pos + len(match.group())
             if next_char_pos < len(input_string) and input_string[next_char_pos] == '=':
                 raise ValueError(f"Invalid format at position {pos}: values must be inside parentheses")
-            results.append({'name': '~' + name if tilde else name, 'type': type_})
+            dims.append(Dim('~' + n if tilde else n, None, INV_CHAR[t] if len(t) == 1 else t, None))
             pos = match.end() + 1
         elif match := SPEC_PATTERNS['name_items'].match(input_string, pos):
-            tilde, name, values = match.groups()
+            tilde, n, values = match.groups()
             items = [n.strip() for n in values.split(',') if n.strip()]
-            results.append({'name': '~' + name if tilde else name, 'type': 'd' if tilde else 'c', 'values': items})
+            dims.append(Dim('~' + n if tilde else n, len(items), DUAL_DIM if tilde else CHANNEL_DIM, tuple(items)))
             pos = match.end() + 1
         elif match := SPEC_PATTERNS['items'].match(input_string, pos):
             tilde, values = match.groups()
-            results.append({'name': '~vector' if tilde else 'vector', 'type': 'd' if tilde else 'c', 'values': values.split(',')})
+            items = [n.strip() for n in values.split(',') if n.strip()]
+            dims.append(Dim('~vector' if tilde else 'vector', len(items), DUAL_DIM if tilde else CHANNEL_DIM, tuple(items)))
             pos = match.end() + 1
         elif match := SPEC_PATTERNS['dual_name'].match(input_string, pos):
-            name, = match.groups()
-            results.append({'name': name, 'type': 'd'})
+            n, = match.groups()
+            dims.append(Dim(n, None, DUAL_DIM, None))
             pos = match.end() + 1
         elif match := SPEC_PATTERNS['single_letter'].match(input_string, pos):
-            name, = match.groups()
-            results.append({'name': name, 'type': 's'})
+            n, = match.groups()
+            dims.append(Dim(n, None, SPATIAL_DIM, None))
             pos = match.end() + 1
         elif default_type is not None and (match := SPEC_PATTERNS['name_only'].match(input_string, pos)):
-            name, = match.groups()
+            n, = match.groups()
             default_type_str = TYPE_BY_FUNCTION[default_type]
-            results.append({'name': name, 'type': default_type_str})
+            dims.append(Dim(n, None, default_type_str, None))
             pos = match.end() + 1
         else:
             raise InvalidShapeSpec(input_string, f"Failed to parse from index {pos}: '{input_string[pos:]}'. Dims must be specified as name:type or name:type=(item_names...). Names and types may only be omitted if component names are given.")
-    names = [r['name'] for r in results]
-    types = [r['type'] for r in results]
-    types = [INV_CHAR[t] if len(t) == 1 else t for t in types]
-    item_names = [r.get('values', None) for r in results]
-    item_names = [tuple(items) if items is not None else None for items in item_names]
-    sizes = [len(items) if items is not None else None for items in item_names]
-    return Shape(tuple(sizes), tuple(names), tuple(types), tuple(item_names))
+    return concat_shapes_(*dims)
 
 
 DIM_FUNCTIONS = {BATCH_DIM: batch, SPATIAL_DIM: spatial, INSTANCE_DIM: instance, CHANNEL_DIM: channel, DUAL_DIM: dual}
 TYPE_BY_FUNCTION = {v: k for k, v in DIM_FUNCTIONS.items()}
 
 
-def merge_shapes(*objs: Union[Shape, Any], order=(batch, dual, instance, spatial, channel), allow_varying_sizes=False):
+def merge_shapes(*objs: Union[Shape, Any], allow_varying_sizes=False) -> Shape:
     """
     Combines `shapes` into a single `Shape`, grouping dimensions by type.
     If dimensions with equal names are present in multiple shapes, their types and sizes must match.
@@ -1929,7 +2462,8 @@ def merge_shapes(*objs: Union[Shape, Any], order=(batch, dual, instance, spatial
 
     Args:
         *objs: `Shape` or `Shaped` objects to combine.
-        order: Dimension type order as `tuple` of type filters (`channel`, `batch`, `spatial` or `instance`). Dimensions are grouped by type while merging.
+        allow_varying_sizes: If `True`, merges incompatible dims by setting their size to `None` and erasing their item names.
+            If `False`, raises an error for incompatible dims.
 
     Returns:
         Merged `Shape`
@@ -1939,35 +2473,64 @@ def merge_shapes(*objs: Union[Shape, Any], order=(batch, dual, instance, spatial
     """
     if not objs:
         return EMPTY_SHAPE
-    shapes = [obj if isinstance(obj, Shape) else shape(obj) for obj in objs]
-    merged = []
-    for dim_type in order:
-        type_group = dim_type(shapes[0])
-        for sh in shapes[1:]:
-            sh = dim_type(sh)
-            for dim in sh:
-                if dim not in type_group:
-                    type_group = type_group._expand(dim, pos=-1)
-                else:  # check size match
-                    sizes_match = _size_equal(dim.size, type_group.get_size(dim.name))
-                    if allow_varying_sizes:
-                        if not sizes_match:
-                            type_group = type_group.with_dim_size(dim, None)
-                    else:
-                        if not sizes_match:
-                            raise IncompatibleShapes(f"Cannot merge shapes {shapes} because dimension '{dim.name}' exists with different sizes.", *shapes)
-                        names1 = type_group.get_item_names(dim)
-                        names2 = sh.get_item_names(dim)
-                        if names1 is not None and names2 is not None and len(names1) > 1:
-                            if names1 != names2:
-                                if set(names1) == set(names2):
-                                    raise IncompatibleShapes(f"Inconsistent component order on {dim.name}: '{','.join(names1)}' vs '{','.join(names2)}' in dimension '{dim.name}'. Failed to merge shapes {shapes}", *shapes)
-                                else:
-                                    raise IncompatibleShapes(f"Cannot merge shapes {shapes} because dimension '{dim.name}' exists with different item names.", *shapes)
-                        elif names1 is None and names2 is not None:
-                            type_group = type_group._with_item_name(dim, tuple(names2))
-        merged.append(type_group)
-    return concat_shapes(*merged)
+    shapes = [shape(obj) for obj in objs]
+    is_pure = not any(isinstance(s, MixedShape) for s in shapes)
+    if is_pure:
+        is_pure = len(set([s.dim_type for s in shapes])) == 1
+    if is_pure:
+        return pure_merge(*shapes, allow_varying_sizes=allow_varying_sizes)
+    else:
+        b = pure_merge(*[s.batch for s in shapes], allow_varying_sizes=allow_varying_sizes)
+        d = pure_merge(*[s.dual for s in shapes], allow_varying_sizes=allow_varying_sizes)
+        i = pure_merge(*[s.instance for s in shapes], allow_varying_sizes=allow_varying_sizes)
+        s = pure_merge(*[s.spatial for s in shapes], allow_varying_sizes=allow_varying_sizes)
+        c = pure_merge(*[s.channel for s in shapes], allow_varying_sizes=allow_varying_sizes)
+        dims = {**b.dims, **d.dims, **i.dims, **s.dims, **c.dims}
+        return MixedShape(b, d, i, s, c, dims) if dims else EMPTY_SHAPE
+
+
+def pure_merge(*shapes: Shape, allow_varying_sizes: bool) -> Shape:
+    all_dims = []
+    non_empty = []
+    for s in shapes:
+        if isinstance(s, Dim):
+            all_dims.append(s)
+            non_empty.append(s)
+        elif isinstance(s, PureShape) and s:
+            all_dims.extend(s.dims.values())
+            non_empty.append(s)
+        else:
+            assert isinstance(s, PureShape), f"Only Dim and PureShape allowed in pure_merge() but got {type(s)}"
+    if not all_dims:
+        return EMPTY_SHAPE
+    if len(non_empty) == 1:
+        return non_empty[0]
+    dims = {}
+    for dim in all_dims:
+        if dim.name not in dims:
+            dims[dim.name] = dim
+        else:  # check size match
+            prev_dim = dims[dim.name]
+            sizes_match = _size_equal(dim.size, prev_dim.size)
+            if allow_varying_sizes:
+                if not sizes_match:
+                    dims[dim.name] = Dim(dim.name, None, dim.dim_type, None)
+            else:
+                if not sizes_match:
+                    raise IncompatibleShapes(f"Cannot merge shapes {shapes} because dimension '{dim.name}' exists with different sizes.", *shapes)
+                names1 = prev_dim.slice_names
+                names2 = dim.slice_names
+                if names1 is not None and names2 is not None and len(names1) > 1:
+                    if names1 != names2:
+                        if set(names1) == set(names2):
+                            raise IncompatibleShapes(
+                                f"Inconsistent component order on {dim.name}: '{','.join(names1)}' vs '{','.join(names2)}' in dimension '{dim.name}'. Failed to merge shapes {shapes}",
+                                *shapes)
+                        else:
+                            raise IncompatibleShapes(f"Cannot merge shapes {shapes} because dimension '{dim.name}' exists with different item names.", *shapes)
+                elif names1 is None and names2 is not None:
+                    dims[dim.name] = dim  # override prev_dim with dim because it has item names
+    return next(iter(dims.values())) if len(dims) == 1 else PureShape(all_dims[0].dim_type, dims)
 
 
 def non_batch(obj) -> Shape:
@@ -1980,13 +2543,7 @@ def non_batch(obj) -> Shape:
     Returns:
         `Shape`
     """
-    from .magic import Shaped
-    if isinstance(obj, Shape):
-        return obj.non_batch
-    elif isinstance(obj, Shaped):
-        return shape(obj).non_batch
-    else:
-        raise AssertionError(f"non_batch() must be called either on a Shape or an object with a 'shape' property but got {obj}")
+    return shape(obj).non_batch
 
 
 def non_spatial(obj) -> Shape:
@@ -1999,13 +2556,7 @@ def non_spatial(obj) -> Shape:
     Returns:
         `Shape`
     """
-    from .magic import Shaped
-    if isinstance(obj, Shape):
-        return obj.non_spatial
-    elif isinstance(obj, Shaped):
-        return shape(obj).non_spatial
-    else:
-        raise AssertionError(f"non_spatial() must be called either on a Shape or an object with a 'shape' property but got {obj}")
+    return shape(obj).non_spatial
 
 
 def non_instance(obj) -> Shape:
@@ -2018,13 +2569,7 @@ def non_instance(obj) -> Shape:
     Returns:
         `Shape`
     """
-    from .magic import Shaped
-    if isinstance(obj, Shape):
-        return obj.non_instance
-    elif isinstance(obj, Shaped):
-        return shape(obj).non_instance
-    else:
-        raise AssertionError(f"non_instance() must be called either on a Shape or an object with a 'shape' property but got {obj}")
+    return shape(obj).non_instance
 
 
 def non_channel(obj) -> Shape:
@@ -2037,13 +2582,7 @@ def non_channel(obj) -> Shape:
     Returns:
         `Shape`
     """
-    from .magic import Shaped
-    if isinstance(obj, Shape):
-        return obj.non_channel
-    elif isinstance(obj, Shaped):
-        return shape(obj).non_channel
-    else:
-        raise AssertionError(f"non_channel() must be called either on a Shape or an object with a 'shape' property but got {obj}")
+    return shape(obj).non_channel
 
 
 def non_dual(obj) -> Shape:
@@ -2056,13 +2595,7 @@ def non_dual(obj) -> Shape:
     Returns:
         `Shape`
     """
-    from .magic import Shaped
-    if isinstance(obj, Shape):
-        return obj.non_dual
-    elif isinstance(obj, Shaped):
-        return shape(obj).non_dual
-    else:
-        raise AssertionError(f"non_dual() must be called either on a Shape or an object with a 'shape' property but got {obj}")
+    return shape(obj).non_dual
 
 
 def non_primal(obj) -> Shape:
@@ -2075,13 +2608,7 @@ def non_primal(obj) -> Shape:
     Returns:
         `Shape`
     """
-    from .magic import Shaped
-    if isinstance(obj, Shape):
-        return obj.non_primal
-    elif isinstance(obj, Shaped):
-        return shape(obj).non_primal
-    else:
-        raise AssertionError(f"non_dual() must be called either on a Shape or an object with a 'shape' property but got {obj}")
+    return shape(obj).non_primal
 
 
 def primal(obj) -> Shape:
@@ -2094,13 +2621,7 @@ def primal(obj) -> Shape:
     Returns:
         `Shape`
     """
-    from .magic import Shaped
-    if isinstance(obj, Shape):
-        return obj.primal
-    elif isinstance(obj, Shaped):
-        return shape(obj).primal
-    else:
-        raise AssertionError(f"primal() must be called either on a Shape or an object with a 'shape' property but got {obj}")
+    return shape(obj).primal
 
 
 def _size_equal(s1, s2):
@@ -2127,88 +2648,309 @@ def concat_shapes(*shapes: Union[Shape, Any]) -> Shape:
     Returns:
         Combined `Shape`.
     """
-    shapes = [obj if isinstance(obj, Shape) else shape(obj) for obj in shapes]
-    names = sum([s.names for s in shapes], ())
-    if len(set(names)) != len(names):
+    shapes = [obj if isinstance(obj, SHAPE_TYPES) else shape(obj) for obj in shapes]
+    return concat_shapes_(*shapes)
+
+
+def concat_shapes_(*shapes: Shape) -> Shape:
+    shapes = [s for s in shapes if s]
+    if not shapes:
+        return EMPTY_SHAPE
+    if len(shapes) == 1:
+        return shapes[0]
+    all_dims = []
+    by_type = {BATCH_DIM: EMPTY_SHAPE, DUAL_DIM: EMPTY_SHAPE, INSTANCE_DIM: EMPTY_SHAPE, SPATIAL_DIM: EMPTY_SHAPE, CHANNEL_DIM: EMPTY_SHAPE}
+    for s in shapes:
+        if s:
+            all_dims.extend(s.dims.values())
+            if isinstance(s, (Dim, PureShape)):
+                by_type[s.dim_type] &= s
+            else:
+                by_type[BATCH_DIM] &= s.batch
+                by_type[DUAL_DIM] &= s.dual
+                by_type[INSTANCE_DIM] &= s.instance
+                by_type[SPATIAL_DIM] &= s.spatial
+                by_type[CHANNEL_DIM] &= s.channel
+    dims = {dim.name: dim for dim in all_dims}
+    if len(dims) != len(all_dims):
         raise IncompatibleShapes(f"Cannot concatenate shapes {list(shapes)}. Duplicate dimension names are not allowed.")
-    sizes = sum([s.sizes for s in shapes], ())
-    types = sum([s.types for s in shapes], ())
-    item_names = sum([s.item_names for s in shapes], ())
-    return Shape(sizes, names, types, item_names)
+    return MixedShape(dims=dims, **by_type)
 
 
-def shape_stack(stack_dim: Shape, *shapes: Shape, stack_dim_first=False):
+def shape_stack(stack_dim: Shape, *shapes: Shape, stack_dim_first=True):
     """ Returns the shape of a tensor created by stacking tensors with `shapes`. """
     if stack_dim.rank > 1:
         assert stack_dim.volume == len(shapes), f"stack_dim {stack_dim} does not match number of shapes: {len(shapes)}"
-    names = list(stack_dim.names)
-    types = list(stack_dim.types)
-    item_names = list(stack_dim.item_names)
-    incompatible_item_names = []
-    for other in shapes:
-        for size, name, type, items in other._dimensions:
-            if name not in names:
-                if type in types:
-                    index = len(types) - types[::-1].index(type)
-                elif type == BATCH_DIM:
-                    index = 0
-                elif type == DUAL_DIM:
-                    index = min([len(names), *[i for i in range(len(names)) if types[i] == DUAL_DIM]])
-                elif type == CHANNEL_DIM:
-                    index = len(names)
-                elif type == SPATIAL_DIM:
-                    index = min([len(names), *[i for i in range(len(names)) if types[i] == CHANNEL_DIM]])
-                elif type == INSTANCE_DIM:
-                    index = min([len(names), *[i for i in range(len(names)) if types[i] == INSTANCE_DIM]])
-                else:
-                    raise ValueError(type)
-                if stack_dim_first:
-                    index = max(index, stack_dim.rank)
-                names.insert(index, name)
-                types.insert(index, type)
-                item_names.insert(index, items)
-            else:
-                index = names.index(name)
-                if items != item_names[index]:
-                    if item_names[index] is None:
-                        item_names[index] = items
-                    else:
-                        warnings.warn(f"Stacking shapes with incompatible item names will result in item names being lost. For {name} Got {item_names[index]} and {items}", RuntimeWarning)
-                        incompatible_item_names.append(index)
-    if incompatible_item_names:
-        for index in incompatible_item_names:
-            item_names[index] = None
-    sizes = []
-    for name in names:
-        if name in stack_dim.names:
-            if stack_dim.rank == 1:
-                size = len(shapes)
-            else:
-                size = stack_dim.get_size(name)
-        else:
-            dim_sizes = [(s.get_size(name) if name in s else None) for s in shapes]
-            valid_dim_sizes = [s.get_size(name) for s in shapes if name in s]
-            if all([math.close(s, valid_dim_sizes[0]) for s in valid_dim_sizes[1:]]):
-                size = valid_dim_sizes[0]
-            else:
-                from ._magic_ops import stack
-                dim_sizes_or_1 = [1 if s is None else s for s in dim_sizes]
-                size = stack(dim_sizes_or_1, stack_dim, expand_values=True)
-        sizes.append(size)
-    return Shape(tuple(sizes), tuple(names), tuple(types), tuple(item_names))
-
-
-def vector_add(*shapes: Shape):
+    elif len(stack_dim) == 1:
+        stack_dim = Dim(stack_dim.name, len(shapes), stack_dim.dim_type, stack_dim.item_names[0])
+    else:
+        assert len(shapes) == 1
+        return shapes[0]
     if not shapes:
-        return EMPTY_SHAPE
-    names = shapes[0].names
-    types = shapes[0].types
-    item_names = shapes[0].item_names
-    for shape in shapes[1:]:
-        for name in shape.names:
-            if name not in names:
-                names += (name,)
-                types += (shape.get_type(name),)
-                item_names += (shape.get_item_names(name),)
-    sizes = [sum(sh.get_size(dim) if dim in sh else 0 for sh in shapes) for dim in names]
-    return Shape(tuple(sizes), names, types, item_names)
+        return stack_dim
+    if len(shapes) == 1:
+        return (stack_dim + shapes[0]) if stack_dim_first else (shapes[0] + stack_dim)
+    dims = {}
+    conflicts = set()  # names with conflicting item names
+    # --- Find conflicting slice names (only where sizes match up) ---
+    for s in shapes:
+        for dim in s:
+            prev = dims.get(dim.name, None)
+            if prev:
+                if dim.slice_names != prev.slice_names:
+                    if prev.slice_names is None:
+                        if dim.name not in conflicts:
+                            dims[dim.name] = dim  # update with item names
+                    else:
+                        warnings.warn(f"Stacking shapes with incompatible item names will result in item names being lost. For {dim.name} Got {prev.slice_names} and {dim.slice_names}", RuntimeWarning)
+                        conflicts.add(dim.name)
+                        dims[dim.name] = Dim(dim.name, dim.size, dim.dim_type, None)
+                # merge item names, not conflicts
+                pass
+            else:
+                dims[dim.name] = dim
+    # --- Stack sizes ---
+    sdims = []
+    for name, dim in dims.items():
+        dim_sizes = [(s.get_size(name) if name in s else None) for s in shapes]
+        valid_dim_sizes = [s.get_size(name) for s in shapes if name in s]
+        if all([math.close(s, valid_dim_sizes[0]) for s in valid_dim_sizes[1:]]):
+            sdims.append(dim)  # all equal, keep as is
+        else:
+            from ._magic_ops import stack
+            dim_sizes_or_1 = [1 if s is None else s for s in dim_sizes]
+            size = stack(dim_sizes_or_1, stack_dim, expand_values=True)
+            sdims.append(Dim(name, size, dim.dim_type, None))
+    return concat_shapes_(stack_dim, *sdims) if stack_dim_first else concat_shapes_(*sdims, stack_dim)
+
+
+def unstack(self: Shape, dim: str) -> Sequence[Shape]:
+    """
+    Slices this `Shape` along a dimension.
+    The dimension listing the sizes of the shape is referred to as `'dims'`.
+
+    Non-uniform tensor shapes may be unstacked along other dimensions as well, see
+    https://tum-pbs.github.io/PhiML/Non_Uniform.html
+
+    Args:
+        dim: dimension to unstack
+
+    Returns:
+        slices of this shape
+    """
+    assert dim != 'dims'
+    if dim not in self and self.is_uniform:
+        return self,
+    elif self.is_uniform:
+        return (self-dim,) * self.get_size(dim)
+    # --- non-uniform case ---
+    from ._tensors import Tensor
+    if dim in self:
+        inner = self.without(dim)
+        dim_size = self.get_size(dim)
+    else:
+        inner = self
+        dim_size = self.shape.get_size(dim)
+    sizes = []
+    for size in inner.sizes:
+        if isinstance(size, Tensor) and dim in size.shape:
+            sizes.append(size._unstack(dim))
+            dim_size = size.shape.get_size(dim)
+        else:
+            sizes.append(size)
+    assert isinstance(dim_size, int)
+    result = []
+    for i in range(dim_size):
+        sizes_i = [int(size[i]) if isinstance(size, tuple) else size for size in sizes]
+        result.append(inner.with_sizes(sizes_i))
+    return result
+
+
+def prepare_gather(self: Shape, dim: str, selection: Union[slice, int, 'Shape', str, tuple, list]) -> Union[slice, List[int]]:
+    """
+    Parse a slice object for a specific dimension.
+
+    Args:
+        dim: Name of dimension to slice.
+        selection: Slice object.
+
+    Returns:
+
+    """
+    if isinstance(selection, SHAPE_TYPES):
+        selection = selection.name if selection.rank == 1 else selection.names
+    if isinstance(selection, str) and ',' in selection:
+        selection = parse_dim_order(selection)
+    if isinstance(selection, str):  # single item name
+        item_names = self.get_item_names(dim, fallback_spatial=True)
+        assert item_names is not None, f"No item names defined for dim '{dim}' in tensor {self.shape} and dimension size does not match spatial rank."
+        assert selection in item_names, f"Accessing tensor.{dim}['{selection}'] failed. Item names are {item_names}."
+        selection = item_names.index(selection)
+    if isinstance(selection, (tuple, list)):
+        selection = list(selection)
+        if any([isinstance(s, str) for s in selection]):
+            item_names = self.get_item_names(dim, fallback_spatial=True)
+            for i, s in enumerate(selection):
+                if isinstance(s, str):
+                    assert item_names is not None, f"Accessing tensor.{dim}['{s}'] failed because no item names are present on tensor {self.shape}"
+                    assert s in item_names, f"Accessing tensor.{dim}['{s}'] failed. Item names are {item_names}."
+                    selection[i] = item_names.index(s)
+        if not selection:  # empty
+            selection = slice(0, 0)
+    return selection
+
+
+def prepare_renaming_gather(self: Shape, dim: str, selection: Union[slice, int, 'Shape', str, tuple, list]):
+    if isinstance(selection, str) and '->' in selection:
+        selection, new_names = selection.split('->')
+        if new_names == '?':
+            return prepare_gather(self, dim, selection), self[dim]._with_item_names((None,))
+        else:
+            return prepare_gather(self, dim, selection), self[dim].with_size(new_names)
+    else:
+        return prepare_gather(self, dim, selection), None
+
+
+def after_gather(self, selection: dict) -> 'Shape':
+    from . import Tensor
+    if self.is_non_uniform:
+        sizes = [(s[selection] if isinstance(s, Tensor) else s) for s in self.sizes]
+        sizes = [(int(s) if isinstance(s, Tensor) and s.rank == 0 else s) for s in sizes]
+        result = self.with_sizes(sizes)
+    else:
+        result = self
+    for sel_dim, sel in selection.items():
+        if sel_dim not in self.names:
+            continue
+        sel = prepare_gather(self, sel_dim, sel)
+        if isinstance(sel, int):
+            result = result.without(sel_dim)
+        elif isinstance(sel, slice):
+            step = int(sel.step) if sel.step is not None else 1
+            start = int(sel.start) if sel.start is not None else (0 if step > 0 else self.get_size(sel_dim)-1)
+            stop = int(sel.stop) if sel.stop is not None else (self.get_size(sel_dim) if step > 0 else -1)
+            if stop < 0 and step > 0:
+                stop += self.get_size(sel_dim)
+                assert stop >= 0
+            if start < 0 and step > 0:
+                start += self.get_size(sel_dim)
+                assert start >= 0
+            stop = min(stop, self.get_size(sel_dim))
+            new_size = math.to_int64(math.ceil(math.wrap((stop - start) / step)))
+            if new_size.rank == 0:
+                new_size = int(new_size)  # NumPy array not allowed because not hashable
+            result = result.with_dim_size(sel_dim, new_size, keep_item_names=True)
+            if step < 0:
+                result = result.flipped([sel_dim])  # ToDo only occurrence
+
+                # item_names = list(self.item_names)
+                # for dim in dims:
+                #     if dim in self.names:
+                #         dim_i_n = self.get_item_names(dim)
+                #         if dim_i_n is not None:
+                #             item_names[self.index(dim)] = tuple(reversed(dim_i_n))
+
+            if self.get_item_names(sel_dim) is not None:
+                result = result.with_dim_size(sel_dim, tuple(self.get_item_names(sel_dim)[sel]))
+        elif isinstance(sel, (tuple, list)):
+            if self.get_item_names(sel_dim) is not None:
+                result = result.with_dim_size(sel_dim, tuple([self.get_item_names(sel_dim)[i] for i in sel]))
+            else:
+                result = result.with_dim_size(sel_dim, len(sel))
+        elif isinstance(sel, Tensor):
+            if sel.dtype.kind == bool:
+                raise NotImplementedError("Shape.after_gather(Tensor[bool]) not yet implemented")
+                # from ._ops import nonzero
+                # sel = nonzero(sel)
+            if sel.dtype.kind == int:
+                assert len(selection) == 1, f"When slicing a Shape with Tensor[int], only one sel item is allowed but got {sel}"
+                sel_shape = shape(sel)
+                assert sel_shape.channel_rank == 1 and sel_shape.channel.item_names[0], f"Shape.after_gather(Tensor[int]) requires indices to have a single channel dim with item names but got {sel}"
+                indexed = sel_shape.channel.item_names[0]
+                assert indexed in self, f"All indexed dims {indexed} must be part of sliced Shape {self}"
+                from ._ops import slice_
+                sizes = [slice_(s, sel) for s in self.sizes]
+                return self.with_sizes(sizes).without(indexed) & sel_shape.non_channel
+        else:
+            raise NotImplementedError(f"{type(sel)} not supported. Only (int, slice) allowed.")
+    return result
+
+
+def resolve_index(self, index: Dict[str, Union[slice, int, 'Shape', str, tuple, list]]) -> Dict[str, Union[slice, int, tuple, list]]:
+    """
+    Replaces item names by the corresponding indices.
+
+    Args:
+        index: n-dimensional index or slice.
+
+    Returns:
+        Same index but without any reference to item names.
+    """
+    return {dim: self.prepare_gather(dim, s) for dim, s in index.items()}
+
+
+def after_pad(self, widths: dict) -> 'Shape':
+    sizes = list(self.sizes)
+    for dim, (lo, up) in widths.items():
+        if dim in self.names:
+            sizes[self.index(dim)] += int(lo + up)
+    return self.with_sizes(sizes)
+
+
+def transpose(self, dims: DimFilter):
+    if callable(dims) and dims in TYPE_BY_FUNCTION:
+        dims = TYPE_BY_FUNCTION[dims]
+        replacement = {DUAL_DIM: dims, dims: DUAL_DIM}
+        return self._with_types(tuple([replacement.get(t, t) for t in self.types]))
+    dims = self.only(dims)
+    return self.replace(dims, dims.transposed)
+
+
+def transposed(self):
+    if self.channel_rank > 0:
+        replacement = {DUAL_DIM: CHANNEL_DIM, CHANNEL_DIM: DUAL_DIM}
+    elif self.instance_rank > 0:
+        replacement = {DUAL_DIM: INSTANCE_DIM, INSTANCE_DIM: DUAL_DIM}
+    elif self.spatial_rank > 0:
+        replacement = {DUAL_DIM: SPATIAL_DIM, SPATIAL_DIM: DUAL_DIM}
+    elif self.dual_rank > 0:
+        warnings.warn(f"Transposing {self} is ill-defined because there are not primal dims. Replacing dual dims by channel dims.", SyntaxWarning)
+        replacement = {DUAL_DIM: CHANNEL_DIM}
+    else:
+        raise ValueError(f"Cannot transpose shape {self} as it has no channel or instance or spatial dims.")
+    return self._with_types(tuple([replacement.get(t, t) for t in self.types]))
+
+
+def to_dict(self: Shape, include_sizes=True):
+    result = dict(names=self.names, types=self.dim_types, item_names=self.item_names)
+    if include_sizes:
+        assert self.is_uniform, f"do_dict(Shape) only supports uniform shapes but got {self}"
+        result['sizes'] = self.sizes
+    return result
+
+
+def from_dict(dict_: dict):
+    names = dict_['names']
+    sizes = list(dict_['sizes']) if 'sizes' in dict_ else [None] * len(names)
+    types = dict_['types']
+    item_names = tuple([None if n is None else tuple(n) for n in dict_['item_names']])
+    for i, n in enumerate(item_names):
+        if n and sizes[i] is None:
+            sizes[i] = len(n)
+    return concat_shapes_(*[Dim(n, s, t, i) for n, s, t, i in zip(names, sizes, types, item_names)])
+
+
+Shape._from_dict = from_dict
+
+
+def first_index(shape: Shape):
+    return next(iter(shape.meshgrid()))
+
+
+for cls in [Dim, PureShape, MixedShape]:
+    cls.unstack = unstack
+    cls.after_gather = after_gather
+    cls.after_pad = after_pad
+    cls.first_index = first_index
+    cls.prepare_gather = prepare_gather
+    cls._to_dict = to_dict

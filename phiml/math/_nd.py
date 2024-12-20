@@ -4,10 +4,10 @@ import numpy as np
 
 from . import _ops as math
 from . import extrapolation as extrapolation
-from ._magic_ops import stack, rename_dims, concat, tree_map, value_attributes
-from ._ops import choose_backend_t, reshaped_native, reshaped_tensor
-from ._shape import Shape, channel, batch, spatial, DimFilter, parse_dim_order, instance, dual, auto, non_batch
-from ._tensors import Tensor, wrap, tensor, reshaped_numpy
+from ._magic_ops import stack, rename_dims, concat, tree_map, value_attributes, pack_dims
+from ._ops import backend_for, reshaped_tensor
+from ._shape import Shape, channel, batch, spatial, DimFilter, parse_dim_order, instance, dual, auto, non_batch, after_gather, SHAPE_TYPES
+from ._tensors import Tensor, wrap, tensor
 from .extrapolation import Extrapolation
 from .magic import PhiTreeNode
 from ..backend import choose_backend
@@ -47,12 +47,14 @@ def vec(name: Union[str, Shape] = 'vector', *sequence, tuple_dim=spatial('sequen
         (x=0, y=0); (x=0, y=1) (sequenceˢ=2, vectorᶜ=x,y)
     """
     dim = auto(name, channel)
-    assert isinstance(dim, Shape), f"name must be a str or Shape but got '{type(name)}'"
+    assert isinstance(dim, SHAPE_TYPES), f"name must be a str or Shape but got '{type(name)}'"
     if sequence:
         assert not components, "vec() must be given either positional or keyword arguments but not both"
         if len(sequence) == 1 and isinstance(sequence[0], (tuple, list)):
             sequence = sequence[0]
-        dim = dim.with_size([str(v) for v in sequence])
+        item_names = [str(v) for v in sequence]
+        if len(set(item_names)) == len(item_names):
+            dim = dim.with_size(item_names)
         return wrap(sequence, dim)
     else:
         def wrap_sequence(value):
@@ -81,7 +83,7 @@ def const_vec(value: Union[float, Tensor], dim: Union[Shape, tuple, list, str]):
     Returns:
         `Tensor`
     """
-    if isinstance(dim, Shape):
+    if isinstance(dim, SHAPE_TYPES):
         if dim.spatial:
             assert not dim.non_spatial, f"When creating a vector given spatial dimensions, the shape may only contain spatial dimensions but got {dim}"
             shape = channel(vector=dim.names)
@@ -153,7 +155,7 @@ def dim_mask(all_dims: Union[Shape, tuple, list], dims: DimFilter, mask_dim=chan
         `Tensor`
     """
     assert isinstance(all_dims, (Shape, tuple, list)), f"all_dims must be a tuple or Shape but got {type(all_dims)}"
-    assert isinstance(mask_dim, Shape) and mask_dim.rank == 1, f"mask_dim must be a single-dimension Shape but got {mask_dim}"
+    assert isinstance(mask_dim, SHAPE_TYPES) and mask_dim.rank == 1, f"mask_dim must be a single-dimension Shape but got {mask_dim}"
     if isinstance(all_dims, (tuple, list)):
         all_dims = spatial(*all_dims)
     dims = all_dims.only(dims)
@@ -198,7 +200,7 @@ def l1_loss(x, reduce: DimFilter = math.non_batch) -> Tensor:
         return sum([l1_loss(getattr(x, a), reduce) for a in value_attributes(x)])
     else:
         try:
-            backend = math.choose_backend(x)
+            backend = choose_backend(x)
             shape = backend.staticshape(x)
             if len(shape) == 0:
                 return abs(x)
@@ -230,7 +232,7 @@ def l2_loss(x, reduce: DimFilter = math.non_batch) -> Tensor:
         return sum([l2_loss(getattr(x, a), reduce) for a in value_attributes(x)])
     else:
         try:
-            backend = math.choose_backend(x)
+            backend = choose_backend(x)
             shape = backend.staticshape(x)
             if len(shape) == 0:
                 return x ** 2 * 0.5
@@ -831,7 +833,7 @@ def upsample2x(grid: Tensor,
         interp_left = 0.25 * left + 0.75 * center
         interp_right = 0.75 * center + 0.25 * right
         stacked = math.stack_tensors([interp_left, interp_right], channel(_interleave='left,right'))
-        grid = math.pack_dims(stacked, (dim.name, '_interleave'), dim)
+        grid = pack_dims(stacked, (dim.name, '_interleave'), dim)
     return grid
 
 
@@ -898,18 +900,18 @@ def find_closest(vectors: Tensor, query: Tensor, method='kd', index_dim=channel(
     result = []
     for i in batch(vectors).meshgrid():
         query_i = query[i]
-        native_query = reshaped_native(query_i, [..., channel])
+        native_query = query_i.native([..., channel])
         if vectors.available:
-            kd_tree = KDTree(reshaped_numpy(vectors[i], [..., channel]))
+            kd_tree = KDTree(vectors[i].numpy([..., channel]))
             def perform_query(np_query):
                 return kd_tree.query(np_query)[1]
             native_idx = query.default_backend.numpy_call(perform_query, (query_i.shape.non_channel.volume,), DType(int, 64), native_query)
         else:
-            b = choose_backend_t(vectors, query)
-            native_vectors = reshaped_native(vectors[i], [..., channel])
+            b = backend_for(vectors, query)
+            native_vectors = vectors[i].native([..., channel])
             def perform_query(np_vectors, np_query):
                 return KDTree(np_vectors).query(np_query)[1]
             native_idx = b.numpy_call(perform_query, (query.shape.without(batch(vectors)).non_channel.volume,), DType(int, 64), native_vectors, native_query)
-        native_multi_idx = choose_backend(native_idx).unravel_index(native_idx, vectors.shape.after_gather(i).non_channel.sizes)
+        native_multi_idx = choose_backend(native_idx).unravel_index(native_idx, after_gather(vectors.shape, i).non_channel.sizes)
         result.append(reshaped_tensor(native_multi_idx, [query_i.shape.non_channel, index_dim or math.EMPTY_SHAPE]))
     return stack(result, batch(vectors))

@@ -1,7 +1,7 @@
 from ._shape import EMPTY_SHAPE, DimFilter, instance, shape, channel
 from ._magic_ops import concat
 from ._ops import mean, ones
-from ._tensors import Tensor, reshaped_tensor, reshaped_native
+from ._tensors import Tensor, reshaped_tensor
 
 
 def fit_line_2d(x: Tensor, y: Tensor, point_dim: DimFilter = instance, weights: Tensor = 1.):
@@ -62,8 +62,8 @@ def fit_hyperplane(x: Tensor, y: Tensor, point_dim: DimFilter = instance, weight
     mat = concat([x, ones(shape(x).without(vec_dim), channel(**{vec_dim.name: 'y'}))], vec_dim) * weights
     y *= weights
     # Least Squares fit
-    np_mat = reshaped_native(mat, [batch_dims, point_dim, vec_dim.name])
-    np_rhs = reshaped_native(y, [batch_dims, point_dim, '_batch_per_matrix'])
+    np_mat = mat.native([batch_dims, point_dim, vec_dim.name])
+    np_rhs = y.native([batch_dims, point_dim, '_batch_per_matrix'])
     from ..backend import choose_backend
     backend = choose_backend(np_mat, np_rhs)
     solution, *_ = backend.matrix_solve_least_squares(np_mat, np_rhs)

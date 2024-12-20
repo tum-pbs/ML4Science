@@ -7,11 +7,12 @@ from phiml.backend import get_precision
 from scipy.sparse import csr_matrix
 
 from ..backend import choose_backend, NUMPY, Backend
-from ._ops import choose_backend_t, concat_tensor, scatter, zeros_like
-from ._shape import Shape, parse_dim_order, merge_shapes, spatial, instance, batch, concat_shapes, EMPTY_SHAPE, dual, channel, non_batch, primal, non_channel, DEBUG_CHECKS
+from ._ops import backend_for, concat_tensor, scatter, zeros_like
+from ._shape import Shape, parse_dim_order, merge_shapes, spatial, instance, batch, concat_shapes, EMPTY_SHAPE, dual, channel, non_batch, primal, non_channel, DEBUG_CHECKS, \
+    after_gather, concat_shapes_
 from ._magic_ops import stack, expand, rename_dims, unpack_dim, unstack, value_attributes
 from ._tensors import Tensor, wrap, disassemble_tree, disassemble_tensors, assemble_tree, TensorStack, may_vary_along, \
-    discard_constant_dims, variable_shape, NativeTensor, equality_by_shape_and_value
+    discard_constant_dims, variable_shape, Dense, equality_by_shape_and_value
 from ._sparse import SparseCoordinateTensor, is_sparse, sparse_dims, same_sparsity_pattern, sparse_tensor, stored_indices, stored_values, add_sparse_batch_dim
 from . import _ops as math
 from ..backend._dtype import combine_types
@@ -120,9 +121,13 @@ class ShiftLinTracer(Tensor):
     def _is_tracer(self) -> bool:
         return True
 
+    @property
+    def backend(self) -> Backend:
+        return backend_for(self._bias, *self.val.values())
+
     def _getitem(self, selection: dict):
         starts = {dim: (item.start or 0) if isinstance(item, slice) else item for dim, item in selection.items()}
-        new_shape = math.zeros(self._shape)[selection].shape
+        new_shape = after_gather(self._shape, selection)
         return self.shift(starts, new_shape, lambda v: v[selection], lambda b: b[selection], nonzero_edge=False)
 
     def shift(self, shifts: Dict[str, int],
@@ -406,6 +411,10 @@ class GatherLinTracer(Tensor):
     def dtype(self):
         return combine_types(self._source.dtype, self._diag.dtype)
 
+    @property
+    def backend(self) -> Backend:
+        return backend_for(self._diag, self._bias)
+
     def _with_shape_replaced(self, new_shape: Shape):
         renamed = dict(self._renamed)
         renamed.update({n: self._renamed.get(o, o) for n, o in zip(new_shape.names, self._shape.names)})
@@ -464,7 +473,7 @@ class SparseLinTracer(Tensor):
         from ._ops import dot
         missing_self_dims = self_dims.without(self._matrix.shape)
         if missing_self_dims:
-            new_source_dims = concat_shapes([dual(**{n + '_src': v for n, v in d.untyped_dict.items()}) for d in missing_self_dims])
+            new_source_dims = concat_shapes_(*[dual(**{n + '_src': v for n, v in d.untyped_dict.items()}) for d in missing_self_dims])
             batched = add_sparse_batch_dim(self._matrix, new_source_dims, missing_self_dims)  # to preserve the source dim
         else:
             batched = self._matrix
@@ -554,6 +563,10 @@ class SparseLinTracer(Tensor):
     @property
     def dtype(self):
         return combine_types(self._source.dtype, self._matrix.dtype)
+
+    @property
+    def backend(self) -> Backend:
+        return backend_for(self._matrix, self._bias)
 
     def _with_shape_replaced(self, new_shape: Shape):
         matrix = rename_dims(self._matrix, self._shape, new_shape)
@@ -699,7 +712,7 @@ def matrix_from_function(f: Callable,
     trace_args = {k: v for k, v in all_args.items() if k not in aux}
     tree, tensors = disassemble_tree(trace_args, cache=False, attr_type=value_attributes)
     assert len(tensors) == 1, f"Only one input tensor can be traced bot got {tensors}"
-    target_backend = choose_backend_t(*tensors)
+    target_backend = backend_for(*tensors)
     # --- Trace function ---
     with NUMPY:
         src = TracerSource(tensors[0].shape, tensors[0].dtype, tuple(trace_args.keys())[0], 0)
@@ -725,7 +738,7 @@ def matrix_from_function(f: Callable,
     else:
         matrix, bias = tracer_to_coo(tracer, sparsify_batch, separate_independent)
     # --- Compress ---
-    if auto_compress and matrix.default_backend.supports(Backend.mul_csr_dense) and target_backend.supports(Backend.mul_csr_dense) and isinstance(matrix, SparseCoordinateTensor):
+    if auto_compress and matrix.backend.supports(Backend.mul_csr_dense) and target_backend.supports(Backend.mul_csr_dense) and isinstance(matrix, SparseCoordinateTensor):
         matrix = matrix.compress_rows()
     # elif backend.supports(Backend.mul_csc_dense):
     #     return matrix.compress_cols(), tracer._bias
@@ -744,7 +757,7 @@ def tracer_to_coo(tracer: Tensor, sparsify_batch: bool, separate_independent: bo
             indices = math.concat_tensor(indices, 'entries')
             values = math.concat_tensor([m._values for m in matrices], 'entries')
             # matrix = stack(matrices, tracer._stack_dim)
-            dense_shape = concat_shapes(matrices[0]._dense_shape, tracer._stack_dim)
+            dense_shape = matrices[0]._dense_shape + tracer._stack_dim
             matrix = SparseCoordinateTensor(indices, values, dense_shape, can_contain_double_entries=False, indices_sorted=False, indices_constant=True)
         else:
             matrix = stack(matrices, tracer._stack_dim)
@@ -765,7 +778,7 @@ def tracer_to_coo(tracer: Tensor, sparsify_batch: bool, separate_independent: bo
     values = []
     for shift_, shift_val in tracer.val.items():
         if shift_val.default_backend is NUMPY:  # sparsify stencil further
-            native_shift_values = math.reshaped_native(shift_val, [batch_val, *out_shape])
+            native_shift_values = shift_val.native([batch_val, *out_shape])
             mask = np.sum(abs(native_shift_values), 0)  # only 0 where no batch entry has a non-zero value
             out_idx = numpy.nonzero(mask)
             src_idx = [(component + shift_[dim]) % typed_src_shape.get_size(dim) for component, dim in zip(out_idx, original_out_names)]
@@ -773,7 +786,7 @@ def tracer_to_coo(tracer: Tensor, sparsify_batch: bool, separate_independent: bo
         else:  # add full stencil tensor
             out_idx = np.unravel_index(np.arange(out_shape.volume), out_shape.sizes) if out_shape else 0
             src_idx = [(component + shift_[dim]) % typed_src_shape.get_size(dim) for component, dim in zip(out_idx, original_out_names)]
-            values.append(math.reshaped_native(shift_val, [batch_val, out_shape]))
+            values.append(shift_val.native([batch_val, out_shape]))
         out_indices.append(out_idx)
         src_idx_all = []
         for dim in typed_src_shape:
@@ -789,7 +802,7 @@ def tracer_to_coo(tracer: Tensor, sparsify_batch: bool, separate_independent: bo
     indices = wrap(indices_np, instance('entries'), channel(sparse_idx=(sliced_src_shape if separate_independent else src_shape).names + out_shape.names))
     backend = choose_backend(*values)
     values = math.reshaped_tensor(backend.concat(values, axis=-1), [batch_val, instance('entries')], convert=False)
-    dense_shape = concat_shapes((sliced_src_shape if separate_independent else src_shape) & out_shape)
+    dense_shape = (sliced_src_shape if separate_independent else src_shape) & out_shape
     max_rank = out_shape.volume - tracer.min_rank_deficiency()
     matrix = SparseCoordinateTensor(indices, values, dense_shape, can_contain_double_entries=False, indices_sorted=False, indices_constant=True, m_rank=max_rank)
     return matrix, tracer._bias
@@ -876,7 +889,7 @@ def to_sparse_tracer(tracer: Tensor, ref: Optional[Tensor]) -> SparseLinTracer:
     if isinstance(tracer, ShiftLinTracer):
         matrix, bias = tracer_to_coo(tracer, sparsify_batch=False, separate_independent=False)
         src_dims = dual(matrix) - set(tracer._renamed)
-        matrix = rename_dims(matrix, src_dims, [n + '_src' for n in src_dims.as_batch().names])
+        matrix = rename_dims(matrix, src_dims, [f'~{n}_src' for n in src_dims.as_batch().names])
         return SparseLinTracer(tracer._source, matrix, bias, tracer.shape)
     assert isinstance(tracer, GatherLinTracer)
     if tracer._selection is None:
@@ -922,7 +935,7 @@ def expand_matrix(matrix: Tensor, dims: Shape) -> Tensor:
     src_dims = [d for d in missing if d.name.startswith('~') and d.name.endswith('_src')]
     out_dims = [d.name[1:-4] for d in src_dims]
     out_dims = [missing[d] for d in out_dims]
-    if isinstance(matrix, NativeTensor):
+    if isinstance(matrix, Dense):
         if len(src_dims) > 1:
             raise NotImplementedError
         for src_dim, out_dim in zip(src_dims, out_dims):

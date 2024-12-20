@@ -194,6 +194,17 @@ class Backend:
             tensors = [self.cast(t, result_type) for t in tensors]
         return tensors
 
+    def auto_cast1(self, tensor):
+        if isinstance(tensor, (bool, Number)):
+            return tensor
+        dtype = self.dtype(tensor)
+        if dtype.kind in {int, bool}:
+            return tensor
+        result_type = combine_types(dtype, fp_precision=self.precision)
+        if result_type.bits == dtype.bits:
+            return tensor
+        return self.cast(tensor, result_type)
+
     def __str__(self):
         return self.name
 
