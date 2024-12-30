@@ -913,10 +913,10 @@ class CustomGradientFunction:
     def _trace(self, in_key: SignatureKey):
         def forward_native(*natives):
             in_tensors = assemble_tensors(natives, in_key.specs)
-            kwargs = assemble_tree(in_key.tree, in_tensors, attr_type=all_attributes)
+            kwargs = assemble_tree(in_key.tree, in_tensors, attr_type=variable_attributes)
             ML_LOGGER.debug(f"Running forward pass of custom op {forward_native.__name__} given args {tuple(kwargs.keys())} containing {len(natives)} native tensors")
             result = self.f(**kwargs, **in_key.auxiliary_kwargs)  # Tensor or tuple/list of Tensors
-            nest, out_tensors = disassemble_tree(result, cache=True, attr_type=all_attributes)
+            nest, out_tensors = disassemble_tree(result, cache=True, attr_type=variable_attributes)
             result_natives, result_shapes, specs = disassemble_tensors(out_tensors, expand=True)
             self.recorded_mappings[in_key] = SignatureKey(forward_native, nest, result_shapes, specs, in_key.backend, in_key.tracing)
             return result_natives
@@ -928,11 +928,11 @@ class CustomGradientFunction:
             x_tensors = assemble_tensors(x_natives, in_key.specs)
             y_tensors = assemble_tensors(y_natives, out_key.specs)
             dy_tensors = assemble_tensors(dy_natives, out_key.specs)
-            kwargs = assemble_tree(in_key.tree, x_tensors, attr_type=all_attributes)
+            kwargs = assemble_tree(in_key.tree, x_tensors, attr_type=variable_attributes)
             if in_key.auxiliary_kwargs:
                 kwargs = {**kwargs, **in_key.auxiliary_kwargs}
-            y = assemble_tree(out_key.tree, y_tensors, attr_type=all_attributes)
-            dy = assemble_tree(out_key.tree, dy_tensors, attr_type=all_attributes)
+            y = assemble_tree(out_key.tree, y_tensors, attr_type=variable_attributes)
+            dy = assemble_tree(out_key.tree, dy_tensors, attr_type=variable_attributes)
             result = self.gradient(kwargs, y, dy)
             assert isinstance(result, dict) and all(key in kwargs for key in result.keys()), f"gradient function must return a dict containing only parameter names of the forward function. Forward '{f_name(self.f)}' has arguments {kwargs}."
             full_result = tuple(result.get(name, None) for name in in_key.tree.keys())
@@ -946,7 +946,7 @@ class CustomGradientFunction:
         return in_key.backend.custom_gradient(forward_native, backward_native, get_external_cache=lambda: self.recorded_mappings[in_key], on_call_skipped=partial(self.recorded_mappings.__setitem__, in_key))
 
     def __call__(self, *args, **kwargs):
-        key, _, natives, _, _ = key_from_args(args, kwargs, self.f_params, cache=False, aux=self.auxiliary_args, attr_type=all_attributes)
+        key, _, natives, _, _ = key_from_args(args, kwargs, self.f_params, cache=False, aux=self.auxiliary_args, attr_type=variable_attributes)
         if not key.backend.supports(Backend.jacobian) and not key.backend.supports(Backend.jacobian):
             return self.f(*args, **kwargs)  # no need to use custom gradient if gradients aren't supported anyway
         elif not key.backend.supports(Backend.custom_gradient):
@@ -962,7 +962,7 @@ Traces can be avoided by jit-compiling the code that calls custom gradient funct
         native_result = self.traces[key](*natives)  # With PyTorch + jit, this does not call forward_native every time
         output_key = match_output_signature(key, self.recorded_mappings, self)
         output_tensors = assemble_tensors(native_result, output_key.specs)
-        return assemble_tree(output_key.tree, output_tensors, attr_type=all_attributes)
+        return assemble_tree(output_key.tree, output_tensors, attr_type=variable_attributes)
 
     def __repr__(self):
         return f"custom_gradient(forward={f_name(self.f)}, backward={self.gradient.__name__}, id={id(self)})"
@@ -994,7 +994,7 @@ Traces can be avoided by jit-compiling the code that calls custom gradient funct
                 assert type(tree) == type(incomplete) and len(tree) == len(incomplete) and set(tree.keys()) == set(incomplete.keys())
                 return sum([CustomGradientFunction.incomplete_tree_to_natives(incomplete[key], c_item, complete_shapes) for key, c_item in tree.items()], [])
         elif isinstance(tree, PhiTreeNode):
-            attributes = all_attributes(tree)
+            attributes = variable_attributes(tree)
             natives = []
             for attr in attributes:
                 n_val = getattr(tree, attr)
