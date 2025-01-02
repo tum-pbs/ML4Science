@@ -1528,7 +1528,7 @@ class PureShape:
         if not self.dims:
             assert not sizes or isinstance(sizes, SHAPE_TYPES)
             return self
-        if isinstance(sizes, int):
+        if isinstance(sizes, (int, str)):
             sizes = (sizes,) * len(self.dims)
         elif isinstance(sizes, SHAPE_TYPES):
             sizes = tuple([sizes.get_size(dim.name) for dim in self.dims.values()])
