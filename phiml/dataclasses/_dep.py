@@ -8,6 +8,8 @@ from phiml.backend import ML_LOGGER
 
 
 def get_unchanged_cache(obj, updated_fields: Set[str]):
+    if not hasattr(obj, '__dict__'):
+        return {}
     cache = {k: v for k, v in obj.__dict__.items() if isinstance(getattr(type(obj), k, None), cached_property)}
     result = {}
     for k, v in cache.items():

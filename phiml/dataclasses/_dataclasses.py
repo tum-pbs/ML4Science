@@ -206,7 +206,8 @@ def assemble(container: DataclassTreeNode, values: List[Tensor]):
     extracted = {a: assemble_tree(v, values, container.attr_type) for a, v in container.extracted.items()}
     instance = container.cls.__new__(container.cls)
     instance.__init__(**extracted, **container.not_extracted)
-    instance.__dict__.update(container.cache)
+    if container.cache:
+        instance.__dict__.update(container.cache)
     return instance
 
 
