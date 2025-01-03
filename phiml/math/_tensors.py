@@ -482,10 +482,6 @@ class Tensor:
 
         Args:
           selection: dim_name: str -> Union[int, slice]
-          selection: dict: 
-
-        Returns:
-
         """
         raise NotImplementedError()
 
@@ -602,19 +598,19 @@ class Tensor:
 
     @property
     def T(self):
-        return self._with_shape_replaced(self.shape.transposed)
+        return self._with_shape_replaced(self.shape.transposed())
 
     @property
     def Ti(self):
-        return self._with_shape_replaced(self.shape.transpose(instance))
+        return self._with_shape_replaced(self.shape.transpose(INSTANCE_DIM))
 
     @property
     def Tc(self):
-        return self._with_shape_replaced(self.shape.transpose(channel))
+        return self._with_shape_replaced(self.shape.transpose(CHANNEL_DIM))
 
     @property
     def Ts(self):
-        return self._with_shape_replaced(self.shape.transpose(channel))
+        return self._with_shape_replaced(self.shape.transpose(SPATIAL_DIM))
 
     def map(self, function: Callable, dims=shape_, range=range, unwrap_scalars=True, **kwargs):
         from ._functional import map_
@@ -1379,9 +1375,9 @@ class Dense(Tensor):
             elif name not in self._shape:
                 assert isinstance(sel, int), f"Attempting slice missing dimension {name} with {selection}"
         gathered = self.default_backend.multi_slice(self._native, tuple(selections)) if selections else self._native
-        new_native_shape = after_gather(self._shape[self._names], selection)
-        new_shape = after_gather(self.collapsed_dims, selection) & new_native_shape
-        return Dense(gathered, new_native_shape.names, new_shape, self._backend)
+        new_shape = after_gather(self._shape, selection)
+        names = [n for n in self._names if n in new_shape]
+        return Dense(gathered, names, new_shape, self._backend)
 
     def _unstack(self, dim: str):
         new_shape = self._shape.without(dim)
@@ -1497,7 +1493,7 @@ class TensorStack(Tensor):
 
     def _transposed_native(self, order: Sequence[str], force_expand: bool):
         assert not self.requires_broadcast, f"_transposed_native requires uniform Tensor but has shape {self._shape}"
-        return self._contiguous()._transposed_native()
+        return self._contiguous()._transposed_native(order, force_expand)
 
     def _reshaped_native(self, groups: Sequence[Shape]):
         if not self.requires_broadcast:

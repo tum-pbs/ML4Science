@@ -536,7 +536,7 @@ class BoundDim:
         Returns:
 
         """
-        return shape(self.obj).get_dim_type(self.name)
+        return shape(self.obj)[self.name].type
 
     @property
     def item_names(self):

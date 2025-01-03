@@ -379,6 +379,9 @@ class Shape(Protocol, metaclass=ShapeMeta):
         """Returns a copy of this `Shape` with all dimensions of the given type, either `batch`, `dual`, `spatial`, `instance`, or `channel` ."""
         ...
 
+    def transpose(self, dim_type: str):
+        ...
+
     @property
     def name(self) -> str:
         """
@@ -922,7 +925,7 @@ class Dim:
         return self if self.dim_type not in PRIMAL_TYPES else EMPTY_SHAPE
 
     def __repr__(self):
-        if self.slice_names is not None:
+        if self.slice_names:
             items_str = ",".join(self.slice_names)
             size_str = items_str if len(items_str) <= 12 else f"{self.size}:{self.slice_names[0][:5]}..."
         else:
@@ -1082,6 +1085,8 @@ class Dim:
 
     def meshgrid(self, names=False):
         assert self.is_uniform, f"Shape.meshgrid() is currently not supported for non-uniform tensors, {self}"
+        if isinstance(self.size, int) and self.size == 0:
+            return ()
         if names and self.slice_names is not None:
             for sln in self.slice_names:
                 yield {self.name: sln}
@@ -1172,6 +1177,14 @@ class Dim:
     def as_type(self, new_type: Callable):
         dim_type = TYPE_BY_FUNCTION[new_type]
         return Dim(_apply_prefix(self.name, dim_type), self.size, dim_type, self.slice_names)
+
+    def transpose(self, dim_type: str):
+        assert dim_type in {SPATIAL_DIM, INSTANCE_DIM, CHANNEL_DIM}
+        if self.dim_type == DUAL_DIM:
+            return Dim(self.name[1:], self.size, dim_type, self.slice_names)
+        if self.dim_type == dim_type:
+            return Dim('~'+self.name, self.size, DUAL_DIM, self.slice_names)
+        return self
 
 
 @dataclass(frozen=True)  # slots not compatible with @cached_property
@@ -1430,7 +1443,7 @@ class PureShape:
 
     def isdisjoint(self, other) -> bool:
         if isinstance(other, Dim):
-            return other.name in self.dims
+            return other.name not in self.dims
         if isinstance(other, PureShape):
             return other.dim_type != self.dim_type or self.dims.keys().isdisjoint(other.dims)
         elif isinstance(other, MixedShape):
@@ -1502,6 +1515,8 @@ class PureShape:
 
     def meshgrid(self, names=False):
         assert self.is_uniform, f"Shape.meshgrid() is currently not supported for non-uniform tensors, {self}"
+        if self.volume == 0:
+            return ()
         indices = [0] * len(self.dims)
         while True:
             if names:
@@ -1529,10 +1544,11 @@ class PureShape:
             assert not sizes or isinstance(sizes, SHAPE_TYPES)
             return self
         if isinstance(sizes, (int, str)):
-            sizes = (sizes,) * len(self.dims)
+            dims = {n: dim.with_size(sizes, keep_item_names) for n, dim in self.dims.items()}
         elif isinstance(sizes, SHAPE_TYPES):
-            sizes = tuple([sizes.get_size(dim.name) for dim in self.dims.values()])
-        dims = {dim.name: dim.with_size(size, keep_item_names) for dim, size in zip(self.dims.values(), sizes)}
+            dims = {n: dim.with_size(sizes.get_size(n), keep_item_names) if n in sizes else dim for n, dim in self.dims.items()}
+        else:
+            dims = {dim.name: dim.with_size(size, keep_item_names) for dim, size in zip(self.dims.values(), sizes)}
         return PureShape(self.dim_type, dims)
 
     def without_sizes(self):
@@ -1587,6 +1603,14 @@ class PureShape:
         return PureShape(CHANNEL_DIM, {dim.name: dim for dim in dims})
     def as_type(self, new_type: Callable):
         return {batch: self.as_batch, dual: self.as_dual, instance: self.as_instance, spatial: self.as_spatial, channel: self.as_channel}[new_type]()
+
+    def transpose(self, dim_type: str):
+        if not self:
+            return self
+        if self.dim_type not in {DUAL_DIM, dim_type}:
+            return self
+        dims = [dim.transpose(dim_type) for dim in self.dims.values()]
+        return PureShape(dims[0].dim_type, {dim.name: dim for dim in dims})
 
 
 @dataclass(frozen=True, **_dataclass_kwargs)
@@ -1901,6 +1925,8 @@ class MixedShape:
 
     def meshgrid(self, names=False):
         assert self.is_uniform, f"Shape.meshgrid() is currently not supported for non-uniform tensors, {self}"
+        if self.volume == 0:
+            return ()
         indices = [0] * len(self.dims)
         while True:
             if names:
@@ -1993,6 +2019,13 @@ class MixedShape:
         return PureShape(CHANNEL_DIM, {dim.name: dim for dim in dims}) if len(dims) > 1 else dims[0]
     def as_type(self, new_type: Callable):
         return {batch: self.as_batch, dual: self.as_dual, instance: self.as_instance, spatial: self.as_spatial, channel: self.as_channel}[new_type]()
+
+    def transpose(self, dim_type: str):
+        pure = getattr(self, dim_type)
+        if not pure:
+            return self
+        return concat_shapes_(*[dim.transpose(dim_type) for dim in self.dims.values()])
+
 
 
 EMPTY_SHAPE = PureShape('__empty__', {})
@@ -2897,16 +2930,8 @@ def after_pad(self, widths: dict) -> 'Shape':
     return self.with_sizes(sizes)
 
 
-def transpose(self, dims: DimFilter):
-    if callable(dims) and dims in TYPE_BY_FUNCTION:
-        dims = TYPE_BY_FUNCTION[dims]
-        replacement = {DUAL_DIM: dims, dims: DUAL_DIM}
-        return self._with_types(tuple([replacement.get(t, t) for t in self.types]))
-    dims = self.only(dims)
-    return self.replace(dims, dims.transposed)
-
-
 def transposed(self):
+    raise NotImplementedError
     if self.channel_rank > 0:
         replacement = {DUAL_DIM: CHANNEL_DIM, CHANNEL_DIM: DUAL_DIM}
     elif self.instance_rank > 0:
@@ -2954,3 +2979,4 @@ for cls in [Dim, PureShape, MixedShape]:
     cls.first_index = first_index
     cls.prepare_gather = prepare_gather
     cls._to_dict = to_dict
+    cls.transposed = transposed
