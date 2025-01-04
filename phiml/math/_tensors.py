@@ -2774,7 +2774,7 @@ def format_full(value: Tensor, options: PrintOptions) -> str:  # multi-line cont
             if value.shape.dual_rank > 1:
                 corresponding_primal = value.shape.only(spatial(','.join(dual(value).names)).names, reorder=True)
                 if corresponding_primal:
-                    value = pack_dims(value, corresponding_primal, corresponding_primal[0].dim_type('&'.join(corresponding_primal.names)))
+                    value = pack_dims(value, corresponding_primal, corresponding_primal[0].type('&'.join(corresponding_primal.names)))
                 value = pack_dims(value, dual, dual('&'.join(value.shape.dual.names)))
             dual_dim = dual(value).name
             primal = dual(value).as_spatial().name
