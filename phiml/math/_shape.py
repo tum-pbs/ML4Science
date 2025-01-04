@@ -1108,7 +1108,7 @@ class Dim:
             return Dim(self.name, None, self.dim_type, None)
         if keep_item_names and _size_equal(self.size, size):
             return self
-        return Dim(self.name, size, self.dim_type, None)
+        return Dim(self.name, int(size), self.dim_type, None)
 
     def with_dim_size(self, dim: Union[str, 'Shape'], size: Union[int, 'math.Tensor', str, tuple, list], keep_item_names=True):
         name = dim.name if isinstance(dim, SHAPE_TYPES) else dim
@@ -2925,6 +2925,11 @@ def after_pad(self, widths: dict) -> 'Shape':
     return self.with_sizes(sizes)
 
 
+def mask(self: Shape, names: Union[tuple, list, set, 'Shape']):
+    names = [names] if isinstance(names, str) else names.names
+    return [int(name in names) for name in self.names]
+
+
 def transposed(self):
     raise NotImplementedError
     if self.channel_rank > 0:
@@ -2975,3 +2980,4 @@ for cls in [Dim, PureShape, MixedShape]:
     cls.prepare_gather = prepare_gather
     cls._to_dict = to_dict
     cls.transposed = transposed
+    cls.mask = mask
