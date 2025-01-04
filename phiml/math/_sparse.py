@@ -762,9 +762,9 @@ class CompressedSparseMatrix(Tensor):
         assert invalid in ['clamp', 'discard', 'keep']
         ind_batch = batch(self._indices) & batch(self._pointers)
         channels = non_instance(self._values).without(ind_batch)
-        native_indices = self._indices.native([ind_batch, instance])
-        native_pointers = self._pointers.native([ind_batch, instance])
-        native_values = self._values.native([ind_batch, instance, channels]) if get_values else None
+        native_indices = self._indices._reshaped_native([ind_batch, instance(self._indices).without_sizes()])  # allow variable instance size (PyTorch tracing)
+        native_pointers = self._pointers._reshaped_native([ind_batch, instance(self._pointers)])
+        native_values = self._values._reshaped_native([ind_batch, instance(self._values).without_sizes(), channels]) if get_values else None
         native_shape = self._compressed_dims.volume, self._uncompressed_dims.volume
         if self._uncompressed_offset is not None:
             native_indices -= self._uncompressed_offset

@@ -1228,7 +1228,7 @@ class Dense(Tensor):
                     for s_dim in dim.size.shape.names:
                         assert s_dim in expanded_shape.names, f"Dimension {dim} varies along {s_dim} but {s_dim} is not part of the Shape {self}"
             assert choose_backend(native_tensor) == backend
-            assert expanded_shape.is_uniform
+            assert expanded_shape.is_uniform, expanded_shape
             shape_sizes = [expanded_shape.get_size(n) for n in names]
             assert backend.staticshape(native_tensor) == tuple(shape_sizes), f"Shape {expanded_shape} at {names} does not match native tensor with shape {backend.staticshape(native_tensor)}"
 
@@ -1264,7 +1264,7 @@ class Dense(Tensor):
         native = self._backend.transpose(self._native, perm)  # this will cast automatically
         native = native[tuple(slices)]
         native = self._backend.tile(native, tile)
-        native = self._backend.reshape(native, [g.volume for g in groups])
+        native = self._backend.reshape(native, [g.volume if g.well_defined else -1 for g in groups])
         return native
 
     def _transposed_native(self, order: Sequence[str], force_expand: bool):
