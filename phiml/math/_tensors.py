@@ -3004,7 +3004,7 @@ def is_scalar(value) -> bool:
 
 
 def variable_shape(value):
-    return value._shape - value.collapsed_dims if isinstance(value, Dense) else shape(value)
+    return value._shape.only(value._names) if isinstance(value, Dense) else shape(value)
 
 
 def variable_dim_names(value):

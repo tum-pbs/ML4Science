@@ -1052,6 +1052,14 @@ class TestOps(TestCase):
                 t = tensor([[3, 2, 1], [-1, 5, 2]], batch('b'), spatial(x='1,2,3'))
                 self.assertIsNone(math.sort(t).shape.get_item_names('x'))
 
+    def test_sort_by_key(self):
+        for b in BACKENDS:
+            with b:
+                x = tensor([1, 3, 2, -1], spatial('x'))
+                result, perm = math.sort((x, range), key=x)
+                math.assert_close([-1, 1, 2, 3], result)
+                math.assert_close([3, 0, 2, 1], perm)
+
     def test_pairwise_differences(self):
         for b in BACKENDS:
             with b:
