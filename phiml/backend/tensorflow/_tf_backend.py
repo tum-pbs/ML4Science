@@ -143,7 +143,7 @@ class TFBackend(Backend):
         def aux_f(*args):
             args = [self.numpy(a) for a in args]
             return f(*args, **aux_args)
-        with self.device_of(args[0]):
+        with self._device_for(*args):
             if output_dtypes is None:
                 output0 = f(*[t[0] for t in args], **aux_args)  # Call f to determine its output signature.
                 output_dtypes = tf.nest.map_structure(lambda x: x.dtype, output0)
