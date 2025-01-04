@@ -1247,8 +1247,9 @@ class Dense(Tensor):
         return self._reshaped_native(groups)
 
     def _reshaped_native(self, groups: Sequence[Shape]):
+        native = self.backend.auto_cast1(self._native)
         if not groups:
-            return self.backend.auto_cast1(self._native)
+            return native
         perm = []
         slices = []
         tile = []
@@ -1261,7 +1262,7 @@ class Dense(Tensor):
                 else:
                     slices.append(None)
                     tile.append(dim.size)
-        native = self._backend.transpose(self._native, perm)  # this will cast automatically
+        native = self._backend.transpose(native, perm)
         native = native[tuple(slices)]
         native = self._backend.tile(native, tile)
         native = self._backend.reshape(native, [g.volume if g.well_defined else -1 for g in groups])
