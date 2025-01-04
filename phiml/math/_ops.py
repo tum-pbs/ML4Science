@@ -1599,7 +1599,7 @@ def std(value, dim: DimFilter = non_batch) -> Tensor:
 
 def _std(value: Tensor, dims: Shape) -> Tensor:
     if value.shape.is_uniform:
-        result = value.backend.std(value.native(value.shape), value.shape.indices(dims.names))
+        result = value.backend.std(value._native, tuple(value._names.index(n) for n in dims.names if n in value._names))
         return Dense(result, [n for n in value._names if n not in dims], value.shape - dims, value._backend)
     else:
         non_uniform_dims = value.shape.non_uniform_shape
@@ -1669,7 +1669,7 @@ def all_(boolean_value, dim: DimFilter = non_batch) -> Tensor:
 
 def _all(value: Tensor, dims: Shape) -> Tensor:
     if isinstance(value, Dense):
-        result = value.backend.all(value.native(value.shape), value.shape.indices(dims.names))
+        result = value.backend.all(value._native, tuple(value._names.index(n) for n in dims.names if n in value._names))
         return Dense(result, [n for n in value._names if n not in dims], value.shape - dims, value._backend)
     elif isinstance(value, TensorStack):
         reduced_inners = [_all(t, dims.without(value._stack_dim)) for t in value._tensors]
@@ -1726,7 +1726,7 @@ def _max(value: Tensor, dims: Shape) -> Tensor:
     if value.shape.volume == 0:
         return zeros(value.shape.without(dims), dtype=value.dtype)
     if isinstance(value, Dense):
-        result = value.backend.max(value.native(value.shape), value.shape.indices(dims.names))
+        result = value.backend.max(value._native, tuple(value._names.index(n) for n in dims.names if n in value._names))
         return Dense(result, [n for n in value._names if n not in dims], value.shape - dims, value._backend)
     elif isinstance(value, TensorStack):
         reduced_inners = [_max(t, dims.without(value._stack_dim)) for t in value._tensors]
@@ -1778,9 +1778,8 @@ def _min(value: Tensor, dims: Shape) -> Tensor:
     if value.shape.volume == 0:
         return zeros(value.shape.without(dims), dtype=value.dtype)
     if isinstance(value, Dense):
-        result = value.backend.min(value.native(value.shape), value.shape.indices(dims.names))
-        new_shape = value.shape.without(dims)
-        return Dense(result, new_shape.names, new_shape, value._backend)
+        result = value.backend.min(value._native, tuple(value._names.index(n) for n in dims.names if n in value._names))
+        return Dense(result, [n for n in value._names if n not in dims], value.shape - dims, value._backend)
     elif isinstance(value, TensorStack):
         reduced_inners = [_min(t, dims.without(value._stack_dim)) for t in value._tensors]
         return functools.reduce(lambda x, y: minimum(x, y), reduced_inners) if value._stack_dim in dims else TensorStack(reduced_inners, value._stack_dim)
