@@ -48,7 +48,7 @@ from ._ops import (
     zeros_like, ones_like,
     pad,
     swap_axes,  # reshape operations
-    sort,
+    sort, dsort, isort, ssort, csort,
     safe_div,
     where, nonzero, ravel_index,
     sum_ as sum, finite_sum, dsum, isum, ssum, csum,
