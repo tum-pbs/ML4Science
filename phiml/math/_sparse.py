@@ -328,7 +328,7 @@ class SparseCoordinateTensor(Tensor):
         u_idx_packed = choose_backend(u_idx_packed).numpy(u_idx_packed)
         idx = np.arange(1, c_idx_packed.shape[-1] + 1)  # start indexing at 1 since 0 might get removed
         scipy_csr = csr_matrix((idx, (c_idx_packed[0], u_idx_packed[0])), shape=(c_dims.volume, u_dims.volume))
-        assert c_idx_packed.shape[1] == len(scipy_csr.data), "Failed to create CSR matrix because the CSR matrix contains fewer non-zero values than COO. This can happen when the `x` tensor is too small for the stencil."
+        assert c_idx_packed.shape[1] == len(scipy_csr.data), f"Failed to create CSR matrix because the CSR matrix contains fewer non-zero values than COO. This can happen when the `x` tensor is too small for the stencil. Indices: {c_idx_packed.shape}, Compressed: {scipy_csr.data.shape}"
         # --- Construct CompressedSparseMatrix ---
         entries_dim = instance(values).name
         perm = None
