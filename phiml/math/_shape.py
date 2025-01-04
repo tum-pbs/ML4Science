@@ -4,7 +4,7 @@ import warnings
 from dataclasses import dataclass, replace
 from functools import cached_property
 from numbers import Number
-from typing import Tuple, Callable, List, Union, Any, Sequence, Optional, Dict, Protocol, runtime_checkable, Iterable
+from typing import Tuple, Callable, List, Union, Any, Sequence, Optional, Dict, Protocol, runtime_checkable
 
 from .. import math
 
@@ -2211,7 +2211,6 @@ def spatial(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Sha
     Returns:
         `Shape` containing only dimensions of type spatial.
     """
-    from .magic import Shaped
     if all(isinstance(arg, str) for arg in args) or dims:
         return _construct_shape(SPATIAL_DIM, *args, **dims)
     elif len(args) == 1 and isinstance(args[0], SHAPE_TYPES):
@@ -2251,7 +2250,6 @@ def channel(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Sha
     Returns:
         `Shape` containing only dimensions of type channel.
     """
-    from .magic import Shaped
     if all(isinstance(arg, str) for arg in args) or dims:
         return _construct_shape(CHANNEL_DIM, *args, **dims)
     elif len(args) == 1 and isinstance(args[0], SHAPE_TYPES):
@@ -2291,7 +2289,6 @@ def batch(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Shape
     Returns:
         `Shape` containing only dimensions of type batch.
     """
-    from .magic import Shaped
     if all(isinstance(arg, str) for arg in args) or dims:
         return _construct_shape(BATCH_DIM, *args, **dims)
     elif len(args) == 1 and isinstance(args[0], SHAPE_TYPES):
@@ -2331,7 +2328,6 @@ def instance(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Sh
     Returns:
         `Shape` containing only dimensions of type instance.
     """
-    from .magic import Shaped
     if all(isinstance(arg, str) for arg in args) or dims:
         return _construct_shape(INSTANCE_DIM, *args, **dims)
     elif len(args) == 1 and isinstance(args[0], SHAPE_TYPES):
@@ -2380,7 +2376,6 @@ def dual(*args, **dims: Union[int, str, tuple, list, Shape, 'Tensor']) -> Shape:
     Returns:
         `Shape` containing only dimensions of type dual.
     """
-    from .magic import Shaped
     if all(isinstance(arg, str) for arg in args) or dims:
         return _construct_shape(DUAL_DIM, *args, **dims)
     elif len(args) == 1 and isinstance(args[0], SHAPE_TYPES):
