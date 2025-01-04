@@ -1347,8 +1347,10 @@ class Dense(Tensor):
 
     def _with_natives_replaced(self, natives: list):
         native = natives.pop(0)
-        sizes = choose_backend(native).shape(native)
-        assert sizes == choose_backend(self._native).shape(self._native)
+        if DEBUG_CHECKS:
+            sizes = choose_backend(native).shape(native)
+            old_sizes = self._backend.shape(self._native)
+            assert sizes == old_sizes or (not sizes and not old_sizes), f"Shape of new _native {sizes} does not match old one {self._backend.shape(self._native)}"  # TF sees empty shapes as non-equal
         # new_shape = self._shape.with_sizes(new_native_shape)
         return Dense(native, self._names, self._shape, self._backend)
 
