@@ -567,16 +567,19 @@ def sort(x: TensorOrTree, dim: DimFilter = non_batch, key: Tensor = None) -> Ten
 
 
 dsort = functools.partial(sort, dim=dual)
-dsort.__doc__ = """Sort tensor along dual dim, see `phiml.math.sort`."""
+dsort.__doc__ = """Sort tensor along dual dims, see `phiml.math.sort`."""
+
+psort = functools.partial(sort, dim=primal)
+psort.__doc__ = """Sort tensor along primal dims, see `phiml.math.sort`."""
 
 isort = functools.partial(sort, dim=instance)
-isort.__doc__ = """Sort tensor along instance dim, see `phiml.math.sort`."""
+isort.__doc__ = """Sort tensor along instance dims, see `phiml.math.sort`."""
 
 ssort = functools.partial(sort, dim=spatial)
-ssort.__doc__ = """Sort tensor along spatial dim, see `phiml.math.sort`."""
+ssort.__doc__ = """Sort tensor along spatial dims, see `phiml.math.sort`."""
 
 csort = functools.partial(sort, dim=channel)
-csort.__doc__ = """Sort tensor along channel dim, see `phiml.math.sort`."""
+csort.__doc__ = """Sort tensor along channel dims, see `phiml.math.sort`."""
 
 
 def cumulative_sum(x: Tensor, dim: DimFilter, include_0=False, include_sum=True, index_dim: Union[str, Shape, None] = None):
@@ -1393,6 +1396,9 @@ def sum_(value: TensorOrTree, dim: DimFilter = non_batch) -> TensorOrTree:
 dsum = functools.partial(sum_, dim=dual)
 dsum.__doc__ = """Sum dual dims of `value`, see `phiml.math.sum`."""
 
+psum = functools.partial(sum_, dim=primal)
+psum.__doc__ = """Sum primal dims of `value`, see `phiml.math.sum`."""
+
 isum = functools.partial(sum_, dim=instance)
 isum.__doc__ = """Sum instance dims of `value`, see `phiml.math.sum`."""
 
@@ -1445,6 +1451,9 @@ def prod(value, dim: DimFilter = non_batch) -> Tensor:
 
 dprod = functools.partial(prod, dim=dual)
 dprod.__doc__ = """Compute the product along dual dims of `value`, see `phiml.math.prod`."""
+
+pprod = functools.partial(prod, dim=primal)
+pprod.__doc__ = """Compute the product along primal dims of `value`, see `phiml.math.prod`."""
 
 iprod = functools.partial(prod, dim=instance)
 iprod.__doc__ = """Compute the product along instance dims of `value`, see `phiml.math.prod`."""
@@ -1508,6 +1517,9 @@ def mean(value, dim: DimFilter = non_batch, weight: Union[Tensor, list, tuple] =
 
 dmean = functools.partial(mean, dim=dual)
 dmean.__doc__ = """Compute the mean along dual dims of `value`, see `phiml.math.mean`."""
+
+pmean = functools.partial(mean, dim=primal)
+pmean.__doc__ = """Compute the mean along primal dims of `value`, see `phiml.math.mean`."""
 
 imean = functools.partial(mean, dim=instance)
 imean.__doc__ = """Compute the mean along instance dims of `value`, see `phiml.math.mean`."""
@@ -1678,6 +1690,9 @@ def max_(value: TensorOrTree, dim: DimFilter = non_batch, key: Tensor = None) ->
 dmax = functools.partial(max_, dim=dual)
 dmax.__doc__ = """Compute the maximum along dual dims of `value`, see `phiml.math.max`."""
 
+pmax = functools.partial(max_, dim=primal)
+pmax.__doc__ = """Compute the maximum along primal dims of `value`, see `phiml.math.max`."""
+
 imax = functools.partial(max_, dim=instance)
 imax.__doc__ = """Compute the maximum along instance dims of `value`, see `phiml.math.max`."""
 
@@ -1729,6 +1744,9 @@ def min_(value, dim: DimFilter = non_batch, key: Tensor = None) -> Tensor:
 
 dmin = functools.partial(min_, dim=dual)
 dmin.__doc__ = """Compute the minimum along dual dims of `value`, see `phiml.math.min`."""
+
+pmin = functools.partial(min_, dim=primal)
+pmin.__doc__ = """Compute the minimum along primal dims of `value`, see `phiml.math.min`."""
 
 imin = functools.partial(min_, dim=instance)
 imin.__doc__ = """Compute the minimum along instance dims of `value`, see `phiml.math.min`."""
