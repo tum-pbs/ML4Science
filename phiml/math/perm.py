@@ -6,10 +6,10 @@ from typing import Union, Optional, Any
 import numpy as np
 
 from ..backend import default_backend
-from ._shape import concat_shapes_, batch, DimFilter, Shape, SHAPE_TYPES, shape, non_batch, channel, dual
+from ._shape import concat_shapes_, batch, DimFilter, Shape, SHAPE_TYPES, shape, non_batch, channel, dual, primal
 from ._magic_ops import unpack_dim, expand, stack, slice_
 from ._tensors import reshaped_tensor, TensorOrTree, Tensor, wrap
-from ._ops import unravel_index
+from ._ops import unravel_index, psum, dmin
 
 
 def random_permutation(*shape: Union[Shape, Any], dims=non_batch, index_dim=channel('index')) -> Tensor:
@@ -109,3 +109,22 @@ def all_permutations(dims: Shape, list_dim=dual('perm'), index_dim: Optional[Sha
         assert len(dims) == 1, f"For multi-dim permutations, index_dim must be specified."
         return perms
     return unravel_index(perms, dims, index_dim)
+
+
+def optimal_perm(cost_matrix: Tensor):
+    """
+    Given a pair-wise cost matrix of two equal-size vectors, finds the optimal permutation to apply to one vector (corresponding to the dual dim of `cost_matrix`) in order to obtain the minimum total cost for a bijective map.
+
+    Args:
+        cost_matrix: Pair-wise cost matrix. Must be a square matrix with a dual and primal dim.
+
+    Returns:
+        dual_perm: Permutation that, when applied along the vector corresponding to the dual dim in `cost_matrix`, yields the minimum cost.
+        cost: Optimal cost vector, listed along primal dim of `cost_matrix`.
+    """
+    assert dual(cost_matrix) and primal(cost_matrix), f"cost_matrix must have primal and dual dims but got {cost_matrix}"
+    perms = all_permutations(primal(cost_matrix), index_dim=None)
+    perms = expand(perms, channel(index=dual(cost_matrix).name_list))
+    cost_pairs_by_perm = cost_matrix[perms]
+    perm, cost = dmin((perms, cost_pairs_by_perm), key=psum(cost_pairs_by_perm))
+    return perm, cost
