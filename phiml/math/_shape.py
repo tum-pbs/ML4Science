@@ -1108,7 +1108,10 @@ class Dim:
             return Dim(self.name, None, self.dim_type, None)
         if keep_item_names and _size_equal(self.size, size):
             return self
-        return Dim(self.name, int(size), self.dim_type, None)
+        from ._tensors import Tensor
+        if not isinstance(size, Tensor):
+            size = int(size)
+        return Dim(self.name, size, self.dim_type, None)
 
     def with_dim_size(self, dim: Union[str, 'Shape'], size: Union[int, 'math.Tensor', str, tuple, list], keep_item_names=True):
         name = dim.name if isinstance(dim, SHAPE_TYPES) else dim
