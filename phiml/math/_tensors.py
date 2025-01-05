@@ -2779,7 +2779,7 @@ def format_full(value: Tensor, options: PrintOptions) -> str:  # multi-line cont
             dual_dim = dual(value).name
             primal = dual(value).as_spatial().name
             if primal not in value.shape:
-                primal = non_batch(value).non_dual.name
+                primal = non_batch(value).non_dual
             for b in batch(value).meshgrid(names=True):
                 text = " " + np.array2string(value[b].numpy([primal, dual_dim]), separator=', ', max_line_width=np.inf) + " "
                 text = re.sub('[\\[\\]]', '', text).replace(',', ' ')
