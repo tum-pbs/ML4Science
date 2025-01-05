@@ -3078,6 +3078,24 @@ def ravel_index(index: Tensor, resolution: Shape, dim=channel, mode='undefined')
     return reshaped_tensor(nat_result, [index.shape - index_dim])
 
 
+def unravel_index(index: Tensor, resolution: Shape, index_dim=channel('index')):
+    """
+    Computes a vector index from a scalar index.
+
+    Args:
+        index: Scalar index. May have a channel dimension of size 1.
+        resolution: `Shape`
+
+    Returns:
+        `Tensor` like `index` but with `index_dim` listing the dims in `resolution`.
+    """
+    index = squeeze(index, channel)
+    if not isinstance(index, Dense):
+        raise NotImplementedError
+    nat_v_idx = index.backend.unravel_index(index._native, resolution.sizes)
+    v_idx = wrap(nat_v_idx, index.shape + index_dim.with_size(resolution.names))
+    return v_idx
+
 
 def histogram(values: Tensor, bins: Shape or Tensor = spatial(bins=30), weights=1, same_bins: DimFilter = None, eps=1e-5):
     """

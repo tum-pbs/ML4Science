@@ -50,7 +50,7 @@ from ._ops import (
     swap_axes,  # reshape operations
     sort, dsort, isort, ssort, csort,
     safe_div,
-    where, nonzero, ravel_index,
+    where, nonzero, ravel_index, unravel_index,
     sum_ as sum, finite_sum, dsum, isum, ssum, csum,
     mean, finite_mean, dmean, imean, smean, cmean,
     std,
