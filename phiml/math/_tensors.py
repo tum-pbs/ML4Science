@@ -1,4 +1,5 @@
 import dataclasses
+import operator
 from numbers import Number
 import traceback
 import warnings
@@ -19,9 +20,11 @@ from ._shape import (Shape,
                      prepare_renaming_gather, after_gather, concat_shapes_, Dim, PureShape, SHAPE_TYPES)
 from ..backend import NoBackendFound, choose_backend, BACKENDS, get_precision, default_backend, convert as convert_, \
     Backend, ComputeDevice, OBJECTS, NUMPY, ML_LOGGER
+from ..backend._backend import get_operator
 from ..backend._dtype import DType, combine_types, BOOL, INT64, INT32
 from .magic import BoundDim, PhiTreeNode, slicing_dict, Shaped, _BoundDims
 from .magic import Shapable
+from ..backend.xops import ExtraOperator
 
 
 class Tensor:
@@ -126,75 +129,38 @@ class Tensor:
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):  # NumPy interface
         if len(inputs) != 2:
             return NotImplemented
+        switch_args = self is inputs[1]
+        other = inputs[0] if switch_args else inputs[1]
         if ufunc.__name__ == 'multiply':
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x * y, lambda x, y: choose_backend(x, y).mul(x, y), 'mul', '*')
-            else:
-                return self._op2(inputs[0], lambda x, y: y * x, lambda x, y: choose_backend(x, y).mul(y, x), 'rmul', '*')
+            return self._op2(other, operator.mul, switch_args)
         if ufunc.__name__ == 'add':
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x + y, lambda x, y: choose_backend(x, y).add(x, y), 'add', '+')
-            else:
-                return self._op2(inputs[0], lambda x, y: y + x, lambda x, y: choose_backend(x, y).add(y, x), 'radd', '+')
+            return self._op2(other, operator.add, switch_args)
         if ufunc.__name__ == 'subtract':
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x - y, lambda x, y: choose_backend(x, y).sub(x, y), 'add', '-')
-            else:
-                return self._op2(inputs[0], lambda x, y: y - x, lambda x, y: choose_backend(x, y).sub(y, x), 'rsub', '-')
+            return self._op2(other, operator.sub, switch_args)
         if ufunc.__name__ in ['divide', 'true_divide']:
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x / y, lambda x, y: choose_backend(x, y).div(x, y), 'true_divide', '/')
-            else:
-                return self._op2(inputs[0], lambda x, y: y / x, lambda x, y: choose_backend(x, y).div(y, x), 'r_true_divide', '/')
+            return self._op2(other, operator.truediv, switch_args)
         if ufunc.__name__ == 'floor_divide':
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x // y, lambda x, y: choose_backend(x, y).floordiv(x, y), 'floor_divide', '//')
-            else:
-                return self._op2(inputs[0], lambda x, y: y // x, lambda x, y: choose_backend(x, y).floordiv(y, x), 'r_floor_divide', '//')
+            return self._op2(other, operator.floordiv, switch_args)
         if ufunc.__name__ == 'remainder':
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x % y, lambda x, y: choose_backend(x, y).mod(x, y), 'remainder', '%')
-            else:
-                return self._op2(inputs[0], lambda x, y: y % x, lambda x, y: choose_backend(x, y).mod(y, x), 'r_remainder', '%')
+            return self._op2(other, operator.mod, switch_args)
         if ufunc.__name__ == 'power':
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x ** y, lambda x, y: choose_backend(x, y).pow(x, y), 'power', '**')
-            else:
-                return self._op2(inputs[0], lambda x, y: y ** x, lambda x, y: choose_backend(x, y).pow(y, x), 'r_power', '**')
+            return self._op2(other, operator.pow, switch_args)
         if ufunc.__name__ == 'equal':
             return self.__eq__(inputs[1] if self is inputs[0] else inputs[0])
         if ufunc.__name__ == 'not_equal':
             return self.__ne__(inputs[1] if self is inputs[0] else inputs[0])
         if ufunc.__name__ == 'greater':
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x > y, lambda x, y: choose_backend(x, y).greater_than(x, y), 'greater', '>')
-            else:
-                return self._op2(inputs[0], lambda x, y: y > x, lambda x, y: choose_backend(x, y).greater_than(y, x), 'r_greater', '>')
+            return self._op2(other, operator.gt, switch_args)
         if ufunc.__name__ == 'greater_equal':
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x >= y, lambda x, y: choose_backend(x, y).greater_or_equal(x, y), 'greater_equal', '>=')
-            else:
-                return self._op2(inputs[0], lambda x, y: y >= x, lambda x, y: choose_backend(x, y).greater_or_equal(y, x), 'r_greater_equal', '>=')
+            return self._op2(other, operator.ge, switch_args)
         if ufunc.__name__ == 'less':
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x < y, lambda x, y: choose_backend(x, y).greater_than(y, x), 'less', '<')
-            else:
-                return self._op2(inputs[0], lambda x, y: y < x, lambda x, y: choose_backend(x, y).greater_than(x, y), 'r_less', '<')
+            return self._op2(other, operator.gt, not switch_args)
         if ufunc.__name__ == 'less_equal':
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x <= y, lambda x, y: choose_backend(x, y).greater_or_equal(y, x), 'less_equal', '<=')
-            else:
-                return self._op2(inputs[0], lambda x, y: y <= x, lambda x, y: choose_backend(x, y).greater_or_equal(x, y), 'r_less_equal', '<=')
+            return self._op2(other, operator.ge, not switch_args)
         if ufunc.__name__ == 'left_shift':
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x << y, lambda x, y: choose_backend(x, y).shift_bits_left(x, y), 'left_shift', '<<')
-            else:
-                return self._op2(inputs[0], lambda x, y: y << x, lambda x, y: choose_backend(x, y).shift_bits_left(y, x), 'r_left_shift', '<<')
+            return self._op2(other, operator.lshift, switch_args)
         if ufunc.__name__ == 'right_shift':
-            if inputs[0] is self:
-                return self._op2(inputs[1], lambda x, y: x >> y, lambda x, y: choose_backend(x, y).shift_bits_right(x, y), 'right_shift', '>>')
-            else:
-                return self._op2(inputs[0], lambda x, y: y >> x, lambda x, y: choose_backend(x, y).shift_bits_right(y, x), 'r_right_shift', '>>')
+            return self._op2(other, operator.rshift, switch_args)
         raise NotImplementedError(f"NumPy function '{ufunc.__name__}' is not compatible with Φ-ML tensors.")
 
     @property
@@ -627,71 +593,71 @@ class Tensor:
         return TensorDim(self, name)
 
     def __add__(self, other):
-        return self._op2(other, lambda x, y: x + y, lambda x, y: choose_backend(x, y).add(x, y), 'add', '+')
+        return self._op2(other, operator.add, False)
 
     def __radd__(self, other):
-        return self._op2(other, lambda x, y: y + x, lambda x, y: choose_backend(x, y).add(y, x), 'radd', '+')
+        return self._op2(other, operator.add, True)
 
     def __sub__(self, other):
-            return self._op2(other, lambda x, y: x - y, lambda x, y: choose_backend(x, y).sub(x, y), 'sub', '-')
+        return self._op2(other, operator.sub, False)
 
     def __rsub__(self, other):
-        return self._op2(other, lambda x, y: y - x, lambda x, y: choose_backend(x, y).sub(y, x), 'rsub', '-')
+        return self._op2(other, operator.sub, True)
 
     def __and__(self, other):
-        return self._op2(other, lambda x, y: x & y, lambda x, y: choose_backend(x, y).and_(x, y), 'and', '&')
+        return self._op2(other, operator.and_, False)
 
     def __rand__(self, other):
-        return self._op2(other, lambda x, y: y & x, lambda x, y: choose_backend(x, y).and_(y, x), 'rand', '&')
+        return self._op2(other, operator.and_, True)
 
     def __or__(self, other):
-        return self._op2(other, lambda x, y: x | y, lambda x, y: choose_backend(x, y).or_(x, y), 'or', '|')
+        return self._op2(other, operator.or_, False)
 
     def __ror__(self, other):
-        return self._op2(other, lambda x, y: y | x, lambda x, y: choose_backend(x, y).or_(y, x), 'ror', '|')
+        return self._op2(other, operator.or_, True)
 
     def __xor__(self, other):
-        return self._op2(other, lambda x, y: x ^ y, lambda x, y: choose_backend(x, y).xor(x, y), 'xor', '^')
+        return self._op2(other, operator.xor, False)
 
     def __rxor__(self, other):
-        return self._op2(other, lambda x, y: y ^ x, lambda x, y: choose_backend(x, y).xor(y, x), 'rxor', '^')
+        return self._op2(other, operator.xor, True)
 
     def __mul__(self, other):
-        return self._op2(other, lambda x, y: x * y, lambda x, y: choose_backend(x, y).mul(x, y), 'mul', '*')
+        return self._op2(other, operator.mul, False)
 
     def __rmul__(self, other):
-        return self._op2(other, lambda x, y: y * x, lambda x, y: choose_backend(x, y).mul(y, x), 'rmul', '*')
+        return self._op2(other, operator.mul, True)
 
     def __truediv__(self, other):
-        return self._op2(other, lambda x, y: x / y, lambda x, y: choose_backend(x, y).div(x, y), 'truediv', '/')
+        return self._op2(other, operator.truediv, False)
 
     def __rtruediv__(self, other):
-        return self._op2(other, lambda x, y: y / x, lambda x, y: choose_backend(x, y).div(y, x), 'rtruediv', '/')
+        return self._op2(other, operator.truediv, True)
 
     def __divmod__(self, other):
-        return self._op2(other, lambda x, y: divmod(x, y), lambda x, y: divmod(x, y), 'divmod', 'divmod')
+        return self._op2(other, divmod, False)
 
     def __rdivmod__(self, other):
-        return self._op2(other, lambda x, y: divmod(y, x), lambda x, y: divmod(y, x), 'rdivmod', 'divmod')
+        return self._op2(other, divmod, True)
 
     def __floordiv__(self, other):
-        return self._op2(other, lambda x, y: x // y, lambda x, y: choose_backend(x, y).floordiv(x, y), 'floordiv', '//')
+        return self._op2(other, operator.floordiv, False)
 
     def __rfloordiv__(self, other):
-        return self._op2(other, lambda x, y: y // x, lambda x, y: choose_backend(x, y).floordiv(y, x), 'rfloordiv', '//')
+        return self._op2(other, operator.floordiv, True)
 
     def __pow__(self, power, modulo=None):
         assert modulo is None
-        return self._op2(power, lambda x, y: x ** y, lambda x, y: choose_backend(x, y).pow(x, y), 'pow', '**')
+        return self._op2(power, operator.pow, False)
 
     def __rpow__(self, other):
-        return self._op2(other, lambda x, y: y ** x, lambda x, y: choose_backend(x, y).pow(y, x), 'rpow', '**')
+        return self._op2(other, operator.pow, True)
 
     def __mod__(self, other):
-        return self._op2(other, lambda x, y: x % y, lambda x, y: choose_backend(x, y).mod(x, y), 'mod', '%')
+        return self._op2(other, operator.mod, False)
 
     def __rmod__(self, other):
-        return self._op2(other, lambda x, y: y % x, lambda x, y: choose_backend(x, y).mod(y, x), 'rmod', '%')
+        return self._op2(other, operator.mod, True)
 
     def __eq__(self, other) -> 'Tensor':
         if self is other:
@@ -706,7 +672,7 @@ class Tensor:
         if other is None:
             other = float('nan')
         if self.shape.is_compatible(shape(other)):
-            return self._op2(other, lambda x, y: x == y, lambda x, y: choose_backend(x, y).equal(x, y), 'eq', '==')
+            return self._op2(other, operator.eq, False)
         else:
             return wrap(False)
 
@@ -721,33 +687,33 @@ class Tensor:
         if other is None:
             other = float('nan')
         if self.shape.is_compatible(shape(other)):
-            return self._op2(other, lambda x, y: x != y, lambda x, y: choose_backend(x, y).not_equal(x, y), 'ne', '!=')
+            return self._op2(other, operator.ne, False)
         else:
             return wrap(True)
 
     def __lt__(self, other):
-        return self._op2(other, lambda x, y: x < y, lambda x, y: choose_backend(x, y).greater_than(y, x), 'lt', '<')
+        return self._op2(other, operator.gt, True)
 
     def __le__(self, other):
-        return self._op2(other, lambda x, y: x <= y, lambda x, y: choose_backend(x, y).greater_or_equal(y, x), 'le', '<=')
+        return self._op2(other, operator.ge, True)
 
     def __gt__(self, other):
-        return self._op2(other, lambda x, y: x > y, lambda x, y: choose_backend(x, y).greater_than(x, y), 'gt', '>')
+        return self._op2(other, operator.gt, False)
 
     def __ge__(self, other):
-        return self._op2(other, lambda x, y: x >= y, lambda x, y: choose_backend(x, y).greater_or_equal(x, y), 'ge', '>=')
+        return self._op2(other, operator.ge, False)
 
     def __lshift__(self, other):
-        return self._op2(other, lambda x, y: x << y, lambda x, y: choose_backend(x, y).shift_bits_left(x, y), 'lshift', '<<')
+        return self._op2(other, operator.lshift, False)
 
     def __rlshift__(self, other):
-        return self._op2(other, lambda y, x: x << y, lambda y, x: choose_backend(x, y).shift_bits_left(x, y), 'lshift', '<<')
+        return self._op2(other, operator.lshift, True)
 
     def __rshift__(self, other):
-        return self._op2(other, lambda x, y: x >> y, lambda x, y: choose_backend(x, y).shift_bits_right(x, y), 'rshift', '>>')
+        return self._op2(other, operator.rshift, False)
 
     def __rrshift__(self, other):
-        return self._op2(other, lambda y, x: x >> y, lambda y, x: choose_backend(x, y).shift_bits_right(x, y), 'rshift', '>>')
+        return self._op2(other, operator.rshift, True)
 
     def __abs__(self):
         return self._op1(lambda t: choose_backend(t).abs(t))
@@ -762,7 +728,7 @@ class Tensor:
         return self._op1(lambda t: choose_backend(t).copy(t, only_mutable=False))
 
     def __neg__(self) -> 'Tensor':
-        return self._op1(lambda t: -t)
+        return self._op1(operator.neg)
 
     def __invert__(self) -> 'Tensor':
         return self._op1(lambda t: choose_backend(t).invert(t))
@@ -832,17 +798,13 @@ class Tensor:
         """
         raise NotImplementedError(self.__class__)
 
-    def _op2(self, other, operator: Callable, native_function: Callable, op_name: str = 'unknown', op_symbol: str = '?') -> 'Tensor':
+    def _op2(self, other, op: Callable, switch_args: bool) -> 'Tensor':
         """
         Apply a broadcast operation on two tensors.
 
         Args:
             other: second argument
-            operator: function (Tensor, Tensor) -> Tensor, used to propagate the operation to children tensors to have Python choose the callee
-            native_function: function (native tensor, native tensor) -> native tensor
-            op_name: Name of the python function without leading and trailing `__`.
-                Examples: 'add', 'radd', 'sub', 'mul', 'and', 'eq', 'ge'.
-            op_symbol: Operation symbol, such as '+', '-', '&', '%', '>='
+            op: Operator function (a, b) -> c, used to propagate the operation to children tensors to have Python choose the callee
 
         Returns:
             `Tensor`
@@ -1134,42 +1096,45 @@ class Layout(Tensor):
     def __eq__(self, other):
         if _EQUALITY_REDUCE[-1]['type'] != 'elementwise':
             return Tensor.__eq__(self, other)
-        return self._op2(other, lambda x, y: x == y, lambda x, y: x == y, 'eq', '==')
+        return self._op2(other, operator.eq, False)
 
     def __ne__(self, other):
         if _EQUALITY_REDUCE[-1]['type'] != 'elementwise':
             return Tensor.__ne__(self, other)
-        return self._op2(other, lambda x, y: x != y, lambda x, y: x != y, 'ne', '!=')
+        return self._op2(other, operator.ne, False)
 
     def _assert_close(self, other: Tensor, rel_tolerance: float, abs_tolerance: float, msg: str, verbose: bool):
         from ._ops import assert_close
         inner_test = lambda x, y: assert_close(x, y, rel_tolerance=rel_tolerance, abs_tolerance=abs_tolerance, msg=msg, verbose=verbose)
-        return self._op2(other, inner_test, inner_test, 'assert_close', '≈')
+        return self._op2(other, inner_test, False)
 
-    def _op2(self, other, operator: Callable, native_function: Callable, op_name: str = 'unknown', op_symbol: str = '?') -> Tensor:
-        obj = self._recursive_op2(self._obj, self._stack_dim, other, operator, native_function, op_name)
+    def _op2(self, other, op: Callable, switch_args: bool) -> 'Tensor':
+        obj = self._recursive_op2(self._obj, self._stack_dim, other, op)
         new_stack = self._stack_dim + (other._stack_dim - self._stack_dim) if isinstance(other, Layout) else self._stack_dim
         return Layout(obj, new_stack)
 
     @staticmethod
-    def _recursive_op2(obj, shape: Shape, other: Tensor, operator, native_function, op_name):
+    def _recursive_op2(obj, shape: Shape, other: Tensor, operator: Callable):
         if shape:
             dim = shape.names[0]
             if isinstance(other, Tensor) and dim in other.shape:
-                assert other.shape.get_size(dim) == len(obj), f"Shape mismatch during {op_name}: '{dim}' has size {len(obj)} on layout but {other.shape.get_size(dim)} on other tensor."
+                assert other.shape.get_size(dim) == len(obj), f"Shape mismatch during {operator.__name__}: '{dim}' has size {len(obj)} on layout but {other.shape.get_size(dim)} on other tensor."
                 others = [other[{dim: i}] for i in range(len(obj))]
             else:
                 others = [other] * len(obj)
             if isinstance(obj, (tuple, list)):
-                return type(obj)([Layout._recursive_op2(i, shape[1:], o, operator, native_function, op_name) for i, o in zip(obj, others)])
+                return type(obj)([Layout._recursive_op2(i, shape[1:], o, operator) for i, o in zip(obj, others)])
             elif isinstance(obj, dict):
-                return {k: Layout._recursive_op2(v, shape[1:], o, operator, native_function, op_name) for (k, v), o in zip(obj.items(), others)}
+                return {k: Layout._recursive_op2(v, shape[1:], o, operator) for (k, v), o in zip(obj.items(), others)}
         else:  # leaf
             if isinstance(other, Layout) and not other.shape:
-                return native_function(obj, other.native())
+                return operator(obj, other.native())
             if isinstance(other, Tensor):
                 return operator(obj, other)
             else:
+                if obj is None or other is None:
+                    return operator(obj, other)
+                native_function = get_operator(operator, choose_backend(obj, other))
                 return native_function(obj, other)
 
     def _op1(self, native_function):
@@ -1396,7 +1361,19 @@ class Dense(Tensor):
         native = native_function(self._native)
         return Dense(native, self._names, self._shape, self._backend) if native is not None else self
 
-    def _op2(self, other, operator, native_function, op_name: str = 'unknown', op_symbol: str = '?', switch_args=False):
+    def _op2(self, other, op: Callable, switch_args: bool):
+        if isinstance(other, (bool, int, float, complex)):
+            n1, n2 = (other, self._backend.auto_cast1(self._native)) if switch_args else (self._backend.auto_cast1(self._native), other)
+            try:
+                result = op(n1, n2)
+            except (ExtraOperator, TypeError):
+                b_fun = get_operator(op, self._backend)
+                result = b_fun(n1, n2)
+            except Exception as err:
+                warnings.warn(f"Direct op2 failed with arguments {type(n1)}, {type(n2)}: {err}")
+                b_fun = get_operator(op, self._backend)
+                result = b_fun(n1, n2)
+            return Dense(result, self._names, self._shape, self._backend)
         was_other_tensor = isinstance(other, Tensor)
         if not was_other_tensor:
             try:
@@ -1407,13 +1384,16 @@ class Dense(Tensor):
             return NotImplemented
         if not isinstance(other, Dense):
             other = Dense(other.native(other.shape), other.shape.names, other.shape, self._backend)
+        backend_op = get_operator(op, backend_for(self, other))
+        if backend_op is None:
+            return op(self, other) if switch_args else op(other, self)
         first_names = [n for n in self._names if n not in other._names]
         names = first_names + list(other._names)
         nat1 = self._transposed_native(names, False)
         nat2 = other._native
         if switch_args:
             nat1, nat2 = nat2, nat1
-        result_nat = native_function(nat1, nat2)
+        result_nat = backend_op(nat1, nat2)
         return Dense(result_nat, names, self._shape & other._shape, backend_for(self, other))
 
     def _natives(self) -> tuple:
@@ -1599,25 +1579,28 @@ class TensorStack(Tensor):
         else:
             return self._contiguous()._op1(native_function)
 
-    def _op2(self, other, operator, native_function, op_name: str = 'unknown', op_symbol: str = '?'):
+    def _op2(self, other, op, switch_args):
         other = self._tensor(other)
         if self.requires_broadcast:
             if self._stack_dim.name in other.shape:
                 other_slices = other._unstack(self._stack_dim.name)
-                tensors = [operator(t1, t2) for t1, t2 in zip(self._tensors, other_slices)]
+                tensors = [custom_op2(t1, t2, op, switch_args) for t1, t2 in zip(self._tensors, other_slices)]
             else:
-                tensors = [operator(t, other) for t in self._tensors]
+                tensors = [custom_op2(t, other, op, switch_args) for t in self._tensors]
             return TensorStack(tensors, self._stack_dim)
         elif isinstance(other, Dense) or (isinstance(other, TensorStack) and not other.requires_broadcast):
-            names, new_shape, (native1, native2) = broadcastable_native_tensors(self, other)  # ToDo we don't have to expand all
-            native_result = native_function(native1, native2)
+            names, new_shape, (n1, n2) = broadcastable_native_tensors(self, other)  # ToDo we don't have to expand all
+            if switch_args:
+                n1, n2 = n2, n1
+            native_function = get_operator(op, self.backend)
+            native_result = native_function(n1, n2)
             return Dense(native_result, names, new_shape, backend_for(self, other))
         elif isinstance(other, TensorStack) and other.requires_broadcast:
             if other._stack_dim.name in self.shape:
                 self_slices = self._unstack(other._stack_dim.name)
-                tensors = [operator(t1, t2) for t1, t2 in zip(self_slices, other._tensors)]
+                tensors = [custom_op2(t1, t2, op, switch_args) for t1, t2 in zip(self_slices, other._tensors)]
             else:
-                tensors = [operator(self, t) for t in other._tensors]
+                tensors = [custom_op2(self, t, op, switch_args) for t in other._tensors]
             return TensorStack(tensors, self._stack_dim)
         else:
             return NotImplemented
@@ -1743,9 +1726,9 @@ def tensor(data,
         return Dense(data, (), EMPTY_SHAPE, default_backend() if convert else NUMPY)
     if isinstance(data, (tuple, list)):
         if all(isinstance(d, (bool, int, float, complex, np.generic)) for d in data):
-            array = np.array(data)
-            assert array.dtype != object
-            data = array
+            data = np.array(data)
+            assert data.dtype != object
+            data = NUMPY.auto_cast1(data)
         elif all(isinstance(d, str) for d in data):
             return layout(data, shape or default_list_dim)
         else:
@@ -1904,7 +1887,7 @@ def broadcastable_native_tensors(*tensors) -> Tuple[Sequence[str], Shape, Sequen
     return var_names, broadcast_shape, natives
 
 
-def custom_op2(x: Union[Tensor, float], y: Union[Tensor, float], l_operator, l_native_function, r_operator=None, r_native_function=None, op_name: str = 'unknown', op_symbol: str = None) -> Tensor:
+def custom_op2(x: Union[Tensor, float], y: Union[Tensor, float], op: Callable, switch_args=False) -> Tensor:
     """
     Perform a custom operator on two tensors.
     This method first tries calling _op2() on the first tensor and if that fails, tries it on the second tensor.
@@ -1912,27 +1895,26 @@ def custom_op2(x: Union[Tensor, float], y: Union[Tensor, float], l_operator, l_n
     Args:
       x: Left argument
       y: Right argument
-      l_operator: Operator function acting on Tensors
-      l_native_function: Operator function acting on natives
-      r_operator:  Argument-reversed operator function acting on Tensors
-      r_native_function:  Argument-reversed operator function acting on natives
-      op_name: Name of the operator function for debugging purposes. Leading 'r' will be added for the operand-reversed version.
-      op_symbol: Short name for the operator, independent of argument order.
+      op: Operator function taking two arguments. Should be contained in the Backend operator mapping.
 
     Returns:
         `Tensor`
     """
-    if op_symbol is None:
-        op_symbol = op_name
+    if switch_args:
+        x, y = y, x
+    if isinstance(x, Tensor):
+        result = x._op2(y, op, False)
+        if result is not NotImplemented:
+            return result
+    elif isinstance(y, Tensor):
+        result = y._op2(x, op, True)
+        if result is not NotImplemented:
+            return result
     x = wrap(x)
     y = wrap(y)
-    result = x._op2(y, l_operator, l_native_function, op_name, op_symbol)
+    result = x._op2(y, op, False)
     if result is NotImplemented:
-        if r_operator is None:
-            r_operator = lambda a, b: l_operator(b, a)
-        if r_native_function is None:
-            r_native_function = lambda a, b: l_native_function(b, a)
-        result = y._op2(x, r_operator, r_native_function, f'r{op_name}', op_symbol)
+        result = y._op2(x, op, True)
         if result is NotImplemented:
             raise NotImplementedError(f"Operation not supported between {type(x)} and {type(y)}")
     return result

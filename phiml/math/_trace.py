@@ -1,3 +1,4 @@
+import operator
 from collections import namedtuple
 from typing import Callable, Dict, Set, Tuple, Union, Any, Optional, Sequence, List, Collection
 
@@ -180,18 +181,14 @@ class ShiftLinTracer(Tensor):
         else:
             raise NotImplementedError('Only linear operations are supported')
 
-    def _op2(self, other: Tensor,
-             operator: Callable,
-             native_function: Callable,
-             op_name: str = 'unknown',
-             op_symbol: str = '?') -> Tensor:
+    def _op2(self, other, op: Callable, switch_args: bool) -> 'Tensor':
         if is_sparse(other):
             return NotImplemented
         if isinstance(other, SparseLinTracer):
-            return to_sparse_tracer(self, other)._op2(other, operator, native_function, op_name, op_symbol)
-        assert op_symbol in '+-*/', f"Unsupported operation encountered while tracing linear function: {native_function}"
-        zeros_for_missing_self = op_name not in ['add', 'radd', 'rsub']  # perform `operator` where `self == 0`
-        zeros_for_missing_other = op_name not in ['add', 'radd', 'sub']  # perform `operator` where `other == 0`
+            return to_sparse_tracer(self, other)._op2(other, op, switch_args)
+        assert op in {operator.add, operator.sub, operator.mul, operator.truediv}, f"Unsupported operation encountered while tracing linear function: {op}"
+        zeros_for_missing_self = op != operator.add and not (op == operator.sub and switch_args)  # perform `operator` where `self == 0`
+        zeros_for_missing_other = op != operator.add and not (op == operator.sub and not switch_args)  # perform `operator` where `other == 0`
         if isinstance(other, Tensor) and other._is_tracer:
             if not isinstance(other, ShiftLinTracer):
                 raise NotImplementedError
@@ -201,36 +198,36 @@ class ShiftLinTracer(Tensor):
             nz_edge = {}
             for dim_shift in self.val.keys():
                 if dim_shift in other.val:
-                    values[dim_shift] = operator(self.val[dim_shift], other.val[dim_shift])
+                    values[dim_shift] = op(self.val[dim_shift], other.val[dim_shift])
                     nz_edge[dim_shift] = self._nz_edge[dim_shift] or other._nz_edge[dim_shift]
                 else:
                     if zeros_for_missing_other:
-                        values[dim_shift] = operator(self.val[dim_shift], math.zeros_like(self.val[dim_shift]))
+                        values[dim_shift] = op(self.val[dim_shift], math.zeros_like(self.val[dim_shift]))
                     else:
                         values[dim_shift] = self.val[dim_shift]
                     nz_edge[dim_shift] = self._nz_edge[dim_shift]
             for dim_shift, other_values in other.val.items():
                 if dim_shift not in self.val:
                     if zeros_for_missing_self:
-                        values[dim_shift] = operator(math.zeros_like(other_values), other_values)
+                        values[dim_shift] = op(math.zeros_like(other_values), other_values)
                     else:
                         values[dim_shift] = other_values
                     nz_edge[dim_shift] = other._nz_edge[dim_shift]
-            bias = operator(self._bias, other._bias)
+            bias = op(self._bias, other._bias)
             return ShiftLinTracer(self._source, values, self._shape, bias, self._renamed, nz_edge)
         else:
             other = self._tensor(other)
-            if op_symbol in '*/':
+            if op in {operator.mul, operator.truediv}:
                 values = {}
                 for dim_shift, val in self.val.items():
-                    values[dim_shift] = operator(val, other)
-                bias = operator(self._bias, other)
+                    values[dim_shift] = op(val, other)
+                bias = op(self._bias, other)
                 return ShiftLinTracer(self._source, values, self._shape & other.shape, bias, self._renamed, self._nz_edge)
-            elif op_symbol in '+-':
-                bias = operator(self._bias, other)
+            elif op in {operator.add, operator.sub}:
+                bias = op(self._bias, other)
                 return ShiftLinTracer(self._source, self.val, self._shape & other.shape, bias, self._renamed, self._nz_edge)
             else:
-                raise ValueError(f"Unsupported operation encountered while tracing linear function: {native_function}")
+                raise ValueError(f"Unsupported operation encountered while tracing linear function: {op}")
 
     def _natives(self) -> tuple:
         """
@@ -370,34 +367,30 @@ class GatherLinTracer(Tensor):
         else:
             raise NotImplementedError('Only linear operations are supported')
 
-    def _op2(self, other: Tensor,
-             operator: Callable,
-             native_function: Callable,
-             op_name: str = 'unknown',
-             op_symbol: str = '?') -> Tensor:
-        assert op_symbol in '+-*/', f"Unsupported operation '{op_symbol}' encountered while tracing linear function: {native_function}"
+    def _op2(self, other, op: Callable, switch_args: bool) -> 'Tensor':
+        assert op in {operator.add, operator.sub, operator.mul, operator.truediv}, f"Unsupported operation '{op}' encountered while tracing linear function"
         if isinstance(other, ShiftLinTracer):
             other = other._to_gather_tracer()
         if isinstance(other, GatherLinTracer):
-            assert op_symbol in '+-', f"Non-linear operation '{op_symbol}' cannot be converted to matrix"
+            assert op in {operator.add, operator.sub}, f"Non-linear operation '{op}' cannot be converted to matrix"
             if not math.always_close(self._selection, other._selection):
-                return to_sparse_tracer(self, other)._op2(other, operator, native_function, op_name, op_symbol)
-            diag = operator(self._diag, other._diag)
-            bias = operator(self._bias, other._bias)
+                return to_sparse_tracer(self, other)._op2(other, op, switch_args)
+            diag = op(self._diag, other._diag)
+            bias = op(self._bias, other._bias)
             return GatherLinTracer(self._source, diag, bias, self._shape, self._selection, self._renamed)
         if isinstance(other, SparseLinTracer) or is_sparse(other):
             return NotImplemented
         else:
             other = self._tensor(other)
-            if op_symbol in '*/':
-                matrix = operator(self._diag, other)
-                bias = operator(self._bias, other)
+            if op in {operator.mul, operator.truediv}:
+                matrix = op(self._diag, other)
+                bias = op(self._bias, other)
                 return GatherLinTracer(self._source, matrix, bias, self._shape & other.shape, self._selection, self._renamed)
-            elif op_symbol in '+-':
-                bias = operator(self._bias, other)
+            elif op in {operator.add, operator.sub}:
+                bias = op(self._bias, other)
                 return GatherLinTracer(self._source, self._matrix, bias, self._shape & other.shape, self._selection, self._renamed)
             else:
-                raise ValueError(f"Unsupported operation encountered while tracing linear function: {native_function}")
+                raise ValueError(f"Unsupported operation {op} encountered while tracing linear function")
 
     @property
     def _is_tracer(self) -> bool:
@@ -522,35 +515,31 @@ class SparseLinTracer(Tensor):
         else:
             raise NotImplementedError('Only linear operations are supported')
 
-    def _op2(self, other,
-             operator: Callable,
-             native_function: Callable,
-             op_name: str = 'unknown',
-             op_symbol: str = '?') -> 'SparseLinTracer':
+    def _op2(self, other, op: Callable, switch_args: bool) -> 'Tensor':
         other = self._tensor(other)
-        assert op_symbol in '+-*/', f"Unsupported operation encountered while tracing linear function: {native_function}"
+        assert op in {operator.add, operator.sub, operator.mul, operator.truediv}, f"Unsupported operation {op} encountered while tracing linear function"
         if other._is_tracer and not isinstance(other, SparseLinTracer):
             other = to_sparse_tracer(other, self)
         if isinstance(other, SparseLinTracer):
-            assert op_symbol in '+-', f"Non-linear operation '{op_symbol}' cannot be converted to matrix"
-            bias = operator(self._bias, other._bias)
+            assert op in {operator.add, operator.sub}, f"Non-linear operation '{op}' cannot be converted to matrix"
+            bias = op(self._bias, other._bias)
             matrix_dims = sparse_dims(self._matrix) & sparse_dims(other._matrix)
             self_matrix = expand_matrix(self._matrix, matrix_dims)
             other_matrix = expand_matrix(other._matrix, matrix_dims)
-            matrix = operator(self_matrix, other_matrix)  # ToDo if other has no dependence on vector, it would also be in the output
+            matrix = op(self_matrix, other_matrix)  # ToDo if other has no dependence on vector, it would also be in the output
             shape = self._shape & other._shape
             return SparseLinTracer(self._source, matrix, bias, shape)
         else:
             # other = self._tensor(other)
-            if op_symbol in '*/':
-                matrix = operator(self._matrix, other)
-                bias = operator(self._bias, other)
+            if op in {operator.mul, operator.truediv}:
+                matrix = op(self._matrix, other)
+                bias = op(self._bias, other)
                 return SparseLinTracer(self._source, matrix, bias, self._shape & other.shape)
-            elif op_symbol in '+-':
-                bias = operator(self._bias, other)
+            elif op in {operator.add, operator.sub}:
+                bias = op(self._bias, other)
                 return SparseLinTracer(self._source, self._matrix, bias, self._shape & other.shape)
             else:
-                raise ValueError(f"Unsupported operation encountered while tracing linear function: {native_function}")
+                raise ValueError(f"Unsupported operation {op} encountered while tracing linear function")
 
     @property
     def _is_tracer(self) -> bool:

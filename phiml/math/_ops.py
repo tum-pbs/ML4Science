@@ -8,6 +8,7 @@ import numpy as np
 
 from ..backend import default_backend, choose_backend, Backend, get_precision, convert as b_convert, BACKENDS, NoBackendFound, ComputeDevice, NUMPY
 from ..backend._dtype import DType, combine_types, INT32
+from phiml.backend import xops
 from .magic import PhiTreeNode
 from ._magic_ops import expand, pack_dims, unpack_dim, cast, value_attributes, bool_to_int, tree_map, concat, stack, unstack, rename_dims, slice_, all_attributes, squeeze, ipack
 from ._shape import (Shape, EMPTY_SHAPE,
@@ -2135,11 +2136,11 @@ def dot(x: Tensor,
 
     def tensor_dot(x, y):
         if is_sparse(x) or is_sparse(y):
-            if x_dims.isdisjoint(sparse_dims(x)) and y_dims.isdisjoint(sparse_dims(y)):
+            if x_dims.isdisjoint(sparse_dims(x)) and y_dims.isdisjoint(sparse_dims(y)):  # dot only dense dims
                 if is_sparse(x):
-                    return x._op2(y, lambda vx, vy: dot(vx, x_dims, vy, y_dims), None, 'dot', '@')
+                    return x._op2(y, lambda vx, vy: dot(vx, x_dims, vy, y_dims), False)
                 else:
-                    return y._op2(x, lambda vy, vx: dot(vx, x_dims, vy, y_dims), None, 'dot', '@')
+                    return y._op2(x, lambda vy, vx: dot(vx, x_dims, vy, y_dims), False)
             else:
                 return sparse_dot(x, x_dims, y, y_dims)
         if x._is_tracer:
@@ -2289,11 +2290,10 @@ def incomplete_gamma(a: TensorOrTree, x: TensorOrTree, upper=False, regularized=
         upper: Whether to complete the upper integral (x to infinity) or the lower integral (0 to x).
         regularized: Whether the integral is divided by Γ(a).
     """
-    call = lambda a, x: incomplete_gamma(a, x, upper=upper, regularized=regularized)
     if upper:
-        reg = custom_op2(a, x, call, lambda a, x: choose_backend(a, x).gamma_inc_u(a, x), 'gamma_inc_u')
+        reg = custom_op2(a, x, xops.gamma_inc_u)
     else:
-        reg = custom_op2(a, x, call, lambda a, x: choose_backend(a, x).gamma_inc_l(a, x), 'gamma_inc_l')
+        reg = custom_op2(a, x, xops.gamma_inc_l)
     return reg if regularized else reg * exp(log_gamma(a))
 
 
@@ -2464,7 +2464,7 @@ def arctan(x: TensorOrTree, divide_by=None) -> TensorOrTree:
         return _backend_op1(x, Backend.arctan)
     else:
         divide_by = to_float(divide_by)
-        return custom_op2(x, divide_by, arctan, lambda a, b: choose_backend(a, b).arctan2(a, b), 'arctan')
+        return custom_op2(x, divide_by, xops.arctan2)
 
 
 def angle(x: TensorOrTree) -> TensorOrTree:
@@ -2560,12 +2560,7 @@ def cast_same(*values: Tensor) -> Tuple[Tensor]:
 
 def safe_div(x: Union[Number, Tensor], y: Union[Number, Tensor]):
     """ Computes *x/y* with the `Tensor`s `x` and `y` but returns 0 where *y=0*. """
-    return custom_op2(x, y,
-                      l_operator=safe_div,
-                      l_native_function=lambda x_, y_: choose_backend(x_, y_).divide_no_nan(x_, y_),
-                      r_operator=lambda y_, x_: safe_div(x_, y_),
-                      r_native_function=lambda y_, x_: choose_backend(x_, y_).divide_no_nan(x_, y_),
-                      op_name='divide_no_nan')
+    return custom_op2(x, y, xops.save_div)
 
 
 def maximum(x: Union[Tensor, float], y: Union[Tensor, float], allow_none=False):
@@ -2575,7 +2570,7 @@ def maximum(x: Union[Tensor, float], y: Union[Tensor, float], allow_none=False):
             return y
         elif y is None:
             return x
-    return custom_op2(x, y, maximum, lambda x_, y_: choose_backend(x_, y_).maximum(x_, y_), op_name='maximum')
+    return custom_op2(x, y, xops.maximum)
 
 
 def minimum(x: Union[Tensor, float], y: Union[Tensor, float], allow_none=False):
@@ -2585,7 +2580,7 @@ def minimum(x: Union[Tensor, float], y: Union[Tensor, float], allow_none=False):
             return y
         elif y is None:
             return x
-    return custom_op2(x, y, minimum, lambda x_, y_: choose_backend(x_, y_).minimum(x_, y_), op_name='minimum')
+    return custom_op2(x, y, xops.minimum)
 
 
 def clip(x: Tensor, lower_limit: Union[float, Tensor] = 0, upper_limit: Union[float, Tensor, Shape] = 1):

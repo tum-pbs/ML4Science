@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import operator
 import sys
 import warnings
 from builtins import ValueError
@@ -13,6 +14,7 @@ import numpy
 import numpy as np
 from numpy import ndarray
 
+from . import xops
 from ._dtype import DType, combine_types, INT32, INT64
 
 TensorType = TypeVar('TensorType')
@@ -194,15 +196,15 @@ class Backend:
         return tensors
 
     def auto_cast1(self, tensor):
-        if isinstance(tensor, (bool, Number)):
+        if isinstance(tensor, (bool, int, float, complex)):
             return tensor
         dtype = self.dtype(tensor)
         if dtype.kind in {int, bool}:
             return tensor
-        result_type = combine_types(dtype, fp_precision=self.precision)
-        if result_type.bits == dtype.bits:
-            return tensor
-        return self.cast(tensor, result_type)
+        if dtype.precision != get_precision():
+            result_type = DType(dtype.kind, precision=get_precision())
+            return self.cast(tensor, result_type)
+        return tensor
 
     def __str__(self):
         return self.name
@@ -2114,3 +2116,39 @@ def disassemble_dataclass(data):
         all_values = {f.name: re_values[f.name] if f.name in tensor_fields else getattr(data, f.name) for f in fields}
         return type(data)(**all_values)
     return assemble, tensors
+
+
+_BACKEND_OPERATORS = {
+    operator.eq: Backend.equal,
+    operator.ne: Backend.not_equal,
+    operator.gt: Backend.greater_than,
+    operator.ge: Backend.greater_or_equal,
+    operator.add: Backend.add,
+    operator.sub: Backend.sub,
+    operator.mul: Backend.mul,
+    operator.truediv: Backend.div,
+    operator.pow: Backend.pow,
+    operator.mod: Backend.mod,
+    operator.and_: Backend.and_,
+    operator.or_: Backend.or_,
+    operator.xor: Backend.xor,
+    operator.floordiv: Backend.floordiv,
+    operator.lshift: Backend.shift_bits_left,
+    operator.rshift: Backend.shift_bits_right,
+    operator.inv: Backend.invert,
+    operator.invert: Backend.invert,
+    divmod: divmod,
+    abs: Backend.abs,
+    xops.save_div: Backend.divide_no_nan,
+    xops.gamma_inc_l: Backend.gamma_inc_l,
+    xops.gamma_inc_u: Backend.gamma_inc_u,
+    xops.arctan2: Backend.arctan2,
+    xops.minimum: Backend.minimum,
+    xops.maximum: Backend.maximum,
+}
+
+def get_operator(op: Callable, backend: Backend):
+    fun = _BACKEND_OPERATORS.get(op)
+    if fun is not None:
+        return getattr(backend, fun.__name__)
+    return None

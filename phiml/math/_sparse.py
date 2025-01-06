@@ -1,3 +1,4 @@
+import operator
 import warnings
 from functools import partial
 from numbers import Number
@@ -11,7 +12,7 @@ from scipy.sparse.linalg import aslinearoperator
 from ._magic_ops import concat, pack_dims, expand, rename_dims, stack, unpack_dim, unstack
 from ._shape import Shape, non_batch, merge_shapes, instance, batch, non_instance, shape, channel, spatial, DimFilter, \
     concat_shapes, EMPTY_SHAPE, dual, non_channel, DEBUG_CHECKS, primal, concat_shapes_
-from ._tensors import Tensor, TensorStack, Dense, cached, wrap, reshaped_tensor, tensor, backend_for
+from ._tensors import Tensor, TensorStack, Dense, cached, wrap, reshaped_tensor, tensor, backend_for, custom_op2
 from ..backend import choose_backend, NUMPY, Backend, get_precision
 from ..backend._dtype import DType, INT64
 
@@ -367,20 +368,20 @@ class SparseCoordinateTensor(Tensor):
     def _op1(self, native_function):
         return self._with_values(self._values._op1(native_function))
 
-    def _op2(self, other, operator: Callable, native_function: Callable, op_name: str = 'unknown', op_symbol: str = '?') -> 'Tensor':
+    def _op2(self, other, op: Callable, switch_args: bool) -> 'Tensor':
         other_shape = shape(other)
         affects_only_values = self._dense_shape.isdisjoint(other_shape)
         if affects_only_values:
-            return self._with_values(operator(self._values, other))
+            return self._with_values(op(self._values, other))
         if isinstance(other, CompressedSparseMatrix):
             other = other.decompress()
         if isinstance(other, SparseCoordinateTensor):
             if same_sparsity_pattern(self, other):
-                return self._with_values(operator(self._values, other._values))
+                return self._with_values(op(self._values, other._values))
             else:
-                if op_name not in ['add', 'radd', 'sub', 'rsub']:
+                if op not in {operator.add, operator.sub}:
                     same_sparsity_pattern(self, other)  # debug checkpoint
-                    raise AssertionError(f"Operation '{op_symbol}' ({op_name}) requires sparse matrices with the same sparsity pattern.")
+                    raise AssertionError(f"Operation '{op}' requires sparse matrices with the same sparsity pattern.")
                 all_sparse_dims = sparse_dims(other) & sparse_dims(self)
                 self_indices = pack_dims(self._indices, instance, instance('sp_entries'))
                 other_indices = pack_dims(other._indices, instance, instance('sp_entries'))
@@ -389,21 +390,19 @@ class SparseCoordinateTensor(Tensor):
                 self_indices, self_values = with_sparsified_dim(self_indices, self_values, all_sparse_dims)
                 other_indices, other_values = with_sparsified_dim(other_indices, other_values, all_sparse_dims)
                 indices = concat([self_indices, other_indices], 'sp_entries')
-                if op_symbol == '+':
+                if op == operator.add:
                     values = concat([self_values, other_values], instance(self_values), expand_values=True)
-                elif op_name == 'sub':
-                    values = concat([self_values, -other_values], instance(self_values), expand_values=True)
-                else:  # op_name == 'rsub':
-                    values = concat([-self_values, other_values], instance(self_values), expand_values=True)
+                else:
+                    values = concat([-self_values, other_values] if switch_args else [self_values, -other_values], instance(self_values), expand_values=True)
                 return SparseCoordinateTensor(indices, values, self._dense_shape & other._dense_shape, can_contain_double_entries=True, indices_sorted=False, indices_constant=self._indices_constant)
         else:  # other is dense
             if self._dense_shape in other.shape:  # all dims dense -> convert to dense
-                return dense(self)._op2(other, operator, native_function, op_name, op_symbol)
+                return dense(self)._op2(other, op, switch_args)
             else:  # only some dims dense -> stay sparse
                 dense_dims = self._dense_shape.only(other.shape)
                 assert instance(other).without(self._dense_shape).is_empty, f"Instance dims cannot be added to sparse tensors from sparse-dense operations but got {other.shape} for sparse tensor {self.shape}"
                 other_values = other[self._indices.sparse_idx[dense_dims.name_list]]
-                values = operator(self._values, other_values)
+                values = custom_op2(self._values, other_values, op, switch_args)
                 return self._with_values(values)
 
     def _getitem(self, selection: dict) -> 'Tensor':
@@ -702,19 +701,19 @@ class CompressedSparseMatrix(Tensor):
     def _op1(self, native_function):
         return self._with_values(self._values._op1(native_function))
 
-    def _op2(self, other, operator: Callable, native_function: Callable, op_name: str = 'unknown', op_symbol: str = '?') -> 'Tensor':
+    def _op2(self, other, op: Callable, switch_args: bool) -> 'Tensor':
         other_shape = shape(other)
         affects_only_values = self.sparse_dims.isdisjoint(other_shape) and non_instance(self._indices).isdisjoint(other_shape)
         if affects_only_values:
-            return self._with_values(operator(self._values, other))
+            return self._with_values(custom_op2(self._values, other, op, switch_args))
         elif isinstance(other, CompressedSparseMatrix):
             if same_sparsity_pattern(self, other):
-                result = operator(self._values, other._values)
+                result = op(self._values, other._values)
                 if self._uncompressed_offset is not None:
                     from ._ops import where
                     result = where(self._valid_mask(), result, 0)
                 return self._with_values(result)
-            elif op_symbol == '+':
+            elif op == operator.add:
                 raise NotImplementedError("Compressed addition not yet implemented")
             else:
                 # convert to COO, then perform operation
@@ -723,19 +722,19 @@ class CompressedSparseMatrix(Tensor):
             from ._ops import gather, boolean_mask, clip, where
             if self._uncompressed_offset is None:
                 other_values = gather(other, self._indices, self._uncompressed_dims)
-                return self._with_values(operator(self._values, other_values))
+                return self._with_values(op(self._values, other_values))
             # if bake_slice:
             #     baked = self._bake_slice()
             #     other_values = gather(other, baked._indices, self._uncompressed_dims)
             #     return baked._with_values(operator(baked._values, other_values))
             indices = clip(self._indices - self._uncompressed_offset, 0, self._uncompressed_dims.volume - 1)
             other_values = gather(other, indices, self._uncompressed_dims)
-            return self._with_values(where(self._valid_mask(), operator(self._values, other_values), 0))
+            return self._with_values(where(self._valid_mask(), op(self._values, other_values), 0))
         elif self._compressed_dims in other_shape and self._uncompressed_dims.isdisjoint(other_shape):
             from ._ops import gather, boolean_mask, clip, where
             row_indices, _ = self._coo_indices('clamp')
             other_values = gather(other, row_indices, self._compressed_dims)
-            result_values = operator(self._values, other_values)
+            result_values = op(self._values, other_values)
             if self._uncompressed_offset is not None:
                 result_values = where(self._valid_mask(), result_values, 0)
             return self._with_values(result_values)
@@ -960,16 +959,16 @@ class CompactSparseTensor(Tensor):
     def _op1(self, native_function):
         return self._with_values(self._values._op1(native_function))
 
-    def _op2(self, other, operator: Callable, native_function: Callable, op_name: str = 'unknown', op_symbol: str = '?') -> 'Tensor':
+    def _op2(self, other, op: Callable, switch_args: bool) -> 'Tensor':
         other_shape = shape(other)
         affects_only_values = self._compressed_dims.isdisjoint(other_shape)
         if affects_only_values:
-            return self._with_values(operator(self._values, other))
+            return self._with_values(op(self._values, other))
         elif isinstance(other, (CompressedSparseMatrix, CompactSparseTensor)):
             if same_sparsity_pattern(self, other):
-                result = operator(self._values, other._values)
+                result = op(self._values, other._values)
                 return self._with_values(result)
-            elif op_symbol == '+':
+            elif op == operator.add:
                 raise NotImplementedError("Compressed addition not yet implemented")
             else:
                 # convert to COO, then perform operation
@@ -978,18 +977,18 @@ class CompactSparseTensor(Tensor):
             from ._ops import gather, boolean_mask, clip, where
             if self._uncompressed_offset is None:
                 other_values = gather(other, self._indices, self._uncompressed_dims)
-                return self._with_values(operator(self._values, other_values))
+                return self._with_values(op(self._values, other_values))
             # if bake_slice:
             #     baked = self._bake_slice()
             #     other_values = gather(other, baked._indices, self._uncompressed_dims)
             #     return baked._with_values(operator(baked._values, other_values))
             indices = clip(self._indices - self._uncompressed_offset, 0, self._uncompressed_dims.volume - 1)
             other_values = gather(other, indices, self._uncompressed_dims)
-            return self._with_values(where(self._valid_mask(), operator(self._values, other_values), 0))
+            return self._with_values(where(self._valid_mask(), op(self._values, other_values), 0))
         elif self._compressed_dims in other_shape and self._uncompressed_dims.isdisjoint(other_shape):
             from ._ops import gather, boolean_mask, clip, where
             other_values = gather(other, self._indices, self._compressed_dims)
-            result_values = operator(self._values, other_values)
+            result_values = op(self._values, other_values)
             return self._with_values(result_values)
         else:
             raise NotImplementedError
