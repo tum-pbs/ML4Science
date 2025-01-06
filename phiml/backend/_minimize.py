@@ -3,6 +3,7 @@ from threading import Barrier
 import numpy
 
 from ._backend import Backend, SolveResult, DType, ML_LOGGER
+from ._dtype import BOOL, INT32
 from ._linalg import _max_iter
 
 
@@ -119,8 +120,8 @@ def gradient_descent(self: Backend, f, x0, atol, max_iter, trj: bool, step_size=
     fg = self.jacobian(f, [0], get_output=True, is_f_scalar=True)
     method = f"Gradient descent with {self.name}"
 
-    iterations = self.zeros([batch_size], DType(int, 32))
-    function_evaluations = self.ones([batch_size], DType(int, 32))
+    iterations = self.zeros([batch_size], INT32)
+    function_evaluations = self.ones([batch_size], INT32)
 
     adaptive_step_size = step_size == 'adaptive'
     if adaptive_step_size:
@@ -128,7 +129,7 @@ def gradient_descent(self: Backend, f, x0, atol, max_iter, trj: bool, step_size=
 
     loss, grad = fg(x0)  # Evaluate function and gradient
     diverged = self.any(~self.isfinite(x0), axis=(1,))
-    converged = self.zeros([batch_size], DType(bool))
+    converged = self.zeros([batch_size], BOOL)
     trajectory = [SolveResult(method, self.numpy(x0), self.numpy(loss), self.numpy(iterations), self.numpy(function_evaluations), self.numpy(converged), self.numpy(diverged), [""] * batch_size)] if trj else None
     max_iter_ = self.to_int32(max_iter)
     continue_ = ~converged & ~diverged & (iterations < max_iter_)

@@ -88,7 +88,7 @@ class DType:
         if isinstance(value, DType):
             return value
         elif value is int:
-            return DType(int, 32)
+            return INT32
         elif value is float:
             from . import get_precision
             return DType(float, get_precision())
@@ -122,28 +122,41 @@ def from_numpy_dtype(np_dtype) -> DType:
     else:
         for base_np_dtype, dtype in _FROM_NUMPY.items():
             if np_dtype == base_np_dtype:
+                _FROM_NUMPY[np_dtype] = dtype
                 return dtype
         if np_dtype.char == 'U':
             return DType(str, 8 * np_dtype.itemsize)
         raise ValueError(np_dtype)
 
 
+BOOL = DType(bool)
+INT8 = DType(int, 8)
+INT16 = DType(int, 16)
+INT32 = DType(int, 32)
+INT64 = DType(int, 64)
+FLOAT16 = DType(float, 16)
+FLOAT32 = DType(float, 32)
+FLOAT64 = DType(float, 64)
+COMPLEX64 = DType(complex, 64)
+COMPLEX128 = DType(complex, 128)
+OBJECT = DType(object)
+
 _TO_NUMPY = {
-    DType(float, 16): np.float16,
-    DType(float, 32): np.float32,
-    DType(float, 64): np.float64,
-    DType(complex, 64): np.complex64,
-    DType(complex, 128): np.complex128,
-    DType(int, 8): np.int8,
-    DType(int, 16): np.int16,
-    DType(int, 32): np.int32,
-    DType(int, 64): np.int64,
-    DType(bool): np.bool_,
-    DType(object): object,
+    BOOL: np.bool_,
+    INT8: np.int8,
+    INT16: np.int16,
+    INT32: np.int32,
+    INT64: np.int64,
+    FLOAT16: np.float16,
+    FLOAT32: np.float32,
+    FLOAT64: np.float64,
+    COMPLEX64: np.complex64,
+    COMPLEX128: np.complex128,
+    OBJECT: object,
 }
 _FROM_NUMPY = {np: dtype for dtype, np in _TO_NUMPY.items()}
-_FROM_NUMPY[np.bool_] = DType(bool)
-_FROM_NUMPY[bool] = DType(bool)
+_FROM_NUMPY[np.bool_] = BOOL
+_FROM_NUMPY[bool] = BOOL
 
 
 def combine_types(*dtypes: DType, fp_precision: int = None) -> DType:

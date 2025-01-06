@@ -10,7 +10,7 @@ from tensorflow.python.client import device_lib
 from tensorflow.python.framework.errors_impl import NotFoundError
 
 from .._backend import combined_dim, TensorType
-from .._dtype import DType, to_numpy_dtype, from_numpy_dtype
+from .._dtype import DType, to_numpy_dtype, from_numpy_dtype, BOOL
 from .. import Backend, ComputeDevice, NUMPY
 from ._tf_cuda_resample import resample_cuda, use_cuda
 
@@ -563,19 +563,19 @@ class TFBackend(Backend):
 
     def isfinite(self, x):
         if self.dtype(x).kind in (bool, int):
-            return self.ones(self.shape(x), dtype=DType(bool))
+            return self.ones(self.shape(x), dtype=BOOL)
         with self.device_of(x):
             return tf.math.is_finite(x)
 
     def isnan(self, x):
         if self.dtype(x).kind in (bool, int):
-            return self.zeros(self.shape(x), dtype=DType(bool))
+            return self.zeros(self.shape(x), dtype=BOOL)
         with self.device_of(x):
             return tf.math.is_nan(x)
 
     def isinf(self, x):
         if self.dtype(x).kind in (bool, int):
-            return self.zeros(self.shape(x), dtype=DType(bool))
+            return self.zeros(self.shape(x), dtype=BOOL)
         with self.device_of(x):
             return tf.math.is_inf(x)
 
@@ -625,7 +625,7 @@ class TFBackend(Backend):
             result = self.vectorized_call(scatter_single, base_grid, indices, values, output_dtypes=self.dtype(base_grid))
             if self.dtype(result).kind != out_kind:
                 if out_kind == bool:
-                    result = self.cast(result, DType(bool))
+                    result = self.cast(result, BOOL)
             return result
 
     def histogram1d(self, values, weights, bin_edges):

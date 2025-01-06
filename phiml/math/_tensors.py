@@ -19,7 +19,7 @@ from ._shape import (Shape,
                      prepare_renaming_gather, after_gather, concat_shapes_, Dim, PureShape, SHAPE_TYPES)
 from ..backend import NoBackendFound, choose_backend, BACKENDS, get_precision, default_backend, convert as convert_, \
     Backend, ComputeDevice, OBJECTS, NUMPY, ML_LOGGER
-from ..backend._dtype import DType, combine_types
+from ..backend._dtype import DType, combine_types, BOOL, INT64, INT32
 from .magic import BoundDim, PhiTreeNode, slicing_dict, Shaped, _BoundDims
 from .magic import Shapable
 
@@ -265,7 +265,7 @@ class Tensor:
         """ Whether all values of this `Tensor` are `True` as a native bool. """
         from ._ops import all_, cast
         if self.rank == 0:
-            return cast(self, DType(bool)).native()
+            return cast(self, BOOL).native()
         else:
             return all_(self, dim=self.shape).native()
 
@@ -274,7 +274,7 @@ class Tensor:
         """ Whether this `Tensor` contains a `True` value as a native bool. """
         from ._ops import any_, cast
         if self.rank == 0:
-            return cast(self, DType(bool)).native()
+            return cast(self, BOOL).native()
         else:
             return any_(self, dim=self.shape).native()
 
@@ -987,9 +987,9 @@ class Layout(Tensor):
     @property
     def dtype(self) -> DType:
         if isinstance(self._obj, bool):
-            return DType(bool)
+            return BOOL
         if isinstance(self._obj, int):
-            return DType(int, 64)
+            return INT64
         elif isinstance(self._obj, (float, complex)):
             return DType(type(self._obj), precision=64)
         else:
@@ -2736,7 +2736,7 @@ def sparse_summary(value: Tensor, options: PrintOptions) -> str:
 
 
 def is_unexpected_dtype(dtype: DType):
-    if dtype in [DType(bool), DType(int, 32)]:
+    if dtype in [BOOL, INT32]:
         return False
     if dtype.kind == float and dtype.precision == get_precision():
         return False

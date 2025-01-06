@@ -11,7 +11,7 @@ from ._tensors import Tensor, wrap, tensor
 from .extrapolation import Extrapolation
 from .magic import PhiTreeNode
 from ..backend import choose_backend
-from ..backend._dtype import DType
+from ..backend._dtype import INT64
 
 
 def vec(name: Union[str, Shape] = 'vector', *sequence, tuple_dim=spatial('sequence'), list_dim=instance('sequence'), **components) -> Tensor:
@@ -905,13 +905,13 @@ def find_closest(vectors: Tensor, query: Tensor, method='kd', index_dim=channel(
             kd_tree = KDTree(vectors[i].numpy([..., channel]))
             def perform_query(np_query):
                 return kd_tree.query(np_query)[1]
-            native_idx = query.default_backend.numpy_call(perform_query, (query_i.shape.non_channel.volume,), DType(int, 64), native_query)
+            native_idx = query.default_backend.numpy_call(perform_query, (query_i.shape.non_channel.volume,), INT64, native_query)
         else:
             b = backend_for(vectors, query)
             native_vectors = vectors[i].native([..., channel])
             def perform_query(np_vectors, np_query):
                 return KDTree(np_vectors).query(np_query)[1]
-            native_idx = b.numpy_call(perform_query, (query.shape.without(batch(vectors)).non_channel.volume,), DType(int, 64), native_vectors, native_query)
+            native_idx = b.numpy_call(perform_query, (query.shape.without(batch(vectors)).non_channel.volume,), INT64, native_vectors, native_query)
         native_multi_idx = choose_backend(native_idx).unravel_index(native_idx, after_gather(vectors.shape, i).non_channel.sizes)
         result.append(reshaped_tensor(native_multi_idx, [query_i.shape.non_channel, index_dim or math.EMPTY_SHAPE]))
     return stack(result, batch(vectors))

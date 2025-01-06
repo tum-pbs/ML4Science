@@ -19,7 +19,7 @@ from .magic import PhiTreeNode, Shapable
 from ..backend import Backend
 from ..backend._backend import get_spatial_derivative_order, functional_derivative_evaluation, ML_LOGGER
 from ..backend._buffer import set_buffer_config, get_buffer_config, get_required_buffer_sizes, wasted_memory
-from ..backend._dtype import DType
+from ..backend._dtype import DType, FLOAT64
 
 X = TypeVar('X')
 Y = TypeVar('Y')
@@ -1408,4 +1408,4 @@ def perf_counter(wait_for_tensor, *wait_for_tensors: Tensor) -> Tensor:
         assert natives, f"in jit mode, perf_counter must be given at least one traced tensor, as the current time is evaluated after all tensors are computed."
         def perf_counter(*_wait_for_natives):
             return np.asarray(time.perf_counter())
-        return wrap(backend.numpy_call(perf_counter, (), DType(float, 64), *natives))
+        return wrap(backend.numpy_call(perf_counter, (), FLOAT64, *natives))

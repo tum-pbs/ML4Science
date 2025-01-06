@@ -18,7 +18,7 @@ from .._numpy_backend import NUMPY
 if version.parse(jax.__version__) >= version.parse('0.2.20'):
     from jax.experimental.sparse import BCOO, COO, CSR, CSC
 
-from .._dtype import DType, to_numpy_dtype, from_numpy_dtype
+from .._dtype import DType, to_numpy_dtype, from_numpy_dtype, COMPLEX128, FLOAT64, INT32, BOOL
 from .._backend import Backend, ComputeDevice, combined_dim, ML_LOGGER, TensorType, map_structure
 
 jax.config.update("jax_enable_x64", True)
@@ -563,7 +563,7 @@ class JaxBackend(Backend):
         result = self.vectorized_call(scatter_single, base_grid, indices, values)
         if self.dtype(result).kind != out_kind:
             if out_kind == bool:
-                result = self.cast(result, DType(bool))
+                result = self.cast(result, BOOL)
         return result
 
     def histogram1d(self, values, weights, bin_edges):
@@ -619,13 +619,13 @@ class JaxBackend(Backend):
 
     def dtype(self, array) -> DType:
         if isinstance(array, bool):
-            return DType(bool)
+            return BOOL
         if isinstance(array, int):
-            return DType(int, 32)
+            return INT32
         if isinstance(array, float):
-            return DType(float, 64)
+            return FLOAT64
         if isinstance(array, complex):
-            return DType(complex, 128)
+            return COMPLEX128
         if not isinstance(array, jnp.ndarray):
             array = jnp.array(array)
         return from_numpy_dtype(array.dtype)

@@ -7,7 +7,7 @@ from typing import Tuple, Callable, Any, Union, Optional, Dict, Collection, Sequ
 import numpy as np
 
 from ..backend import default_backend, choose_backend, Backend, get_precision, convert as b_convert, BACKENDS, NoBackendFound, ComputeDevice, NUMPY
-from ..backend._dtype import DType, combine_types
+from ..backend._dtype import DType, combine_types, INT32
 from .magic import PhiTreeNode
 from ._magic_ops import expand, pack_dims, unpack_dim, cast, value_attributes, bool_to_int, tree_map, concat, stack, unstack, rename_dims, slice_, all_attributes, squeeze, ipack
 from ._shape import (Shape, EMPTY_SHAPE,
@@ -792,7 +792,7 @@ def arange(dim: Shape, start_or_stop: Union[int, None] = None, stop: Union[int, 
             ranges = [batched_range(dims.after_gather(i), start[i], stop[i], step[i]) for i in b0.meshgrid()]
             return stack(ranges, b0)
         b = backend or preferred_backend_for(start, stop)
-        native = b.range(start.native(), stop.native(), step.native(), DType(int, 32))
+        native = b.range(start.native(), stop.native(), step.native(), INT32)
         return Dense(native, range_dim.names, range_dim.with_size(len(native)), b)
     return batched_range(dim, start, stop, step)
 
@@ -3529,7 +3529,7 @@ def pairwise_differences(positions: Tensor,
     # --- Sparse neighbor search ---
     assert max_distance is not None, "max_distance must be specified when computing distance in sparse format"
     max_distance = wrap(max_distance)
-    index_dtype = DType(int, 32)
+    index_dtype = INT32
     backend = backend_for(positions, max_distance)
     batch_shape = batch(positions) & batch(max_distance)
     if not dual_dims.well_defined:
@@ -3761,7 +3761,7 @@ def count_occurrences(values: Tensor, query: Tensor, feature_dims: DimFilter = c
             query_occurrences = counts[inverse]
             result_np.append(combined_occurrences - query_occurrences)
         return np.stack(result_np).astype(np.int32)
-    result_nat = choose_backend(query_nat, values_nat).numpy_call(np_count, (batches.volume, (non_batch(query) - feature_dims).volume), DType(int, 32), query_nat, values_nat)
+    result_nat = choose_backend(query_nat, values_nat).numpy_call(np_count, (batches.volume, (non_batch(query) - feature_dims).volume), INT32, query_nat, values_nat)
     return reshaped_tensor(result_nat, [batches, non_batch(query) - feature_dims], convert=False)
 
 

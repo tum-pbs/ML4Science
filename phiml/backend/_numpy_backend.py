@@ -12,7 +12,7 @@ from scipy.sparse.linalg import spsolve_triangular
 
 from . import Backend, ComputeDevice
 from ._backend import combined_dim, SolveResult, TensorType
-from ._dtype import from_numpy_dtype, to_numpy_dtype, DType
+from ._dtype import from_numpy_dtype, to_numpy_dtype, DType, FLOAT64, BOOL, COMPLEX128, INT32
 
 
 class NumPyBackend(Backend):
@@ -202,7 +202,7 @@ class NumPyBackend(Backend):
     def random_permutations(self, permutations: int, n: int):
         return np.stack([np.random.permutation(n) for _ in range(permutations)])
 
-    def range(self, start, limit=None, delta=1, dtype: DType = DType(int, 32)):
+    def range(self, start, limit=None, delta=1, dtype: DType = INT32):
         if limit is None:
             start, limit = 0, start
         return np.arange(start, limit, delta, to_numpy_dtype(dtype))
@@ -413,7 +413,7 @@ class NumPyBackend(Backend):
     def sort(self, x, axis=-1):
         return np.sort(x, axis)
 
-    def searchsorted(self, sorted_sequence, search_values, side: str, dtype=DType(int, 32)):
+    def searchsorted(self, sorted_sequence, search_values, side: str, dtype=INT32):
         if self.ndims(sorted_sequence) == 1:
             return np.searchsorted(sorted_sequence, search_values, side=side).astype(to_numpy_dtype(dtype))
         else:
@@ -442,13 +442,13 @@ class NumPyBackend(Backend):
 
     def dtype(self, array) -> DType:
         if isinstance(array, bool):
-            return DType(bool)
+            return BOOL
         if isinstance(array, int):
-            return DType(int, 32)
+            return INT32
         if isinstance(array, float):
-            return DType(float, 64)
+            return FLOAT64
         if isinstance(array, complex):
-            return DType(complex, 128)
+            return COMPLEX128
         if not hasattr(array, 'dtype'):
             array = np.array(array)
         return from_numpy_dtype(array.dtype)

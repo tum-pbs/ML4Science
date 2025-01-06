@@ -13,7 +13,7 @@ from ._shape import Shape, non_batch, merge_shapes, instance, batch, non_instanc
     concat_shapes, EMPTY_SHAPE, dual, non_channel, DEBUG_CHECKS, primal, concat_shapes_
 from ._tensors import Tensor, TensorStack, Dense, cached, wrap, reshaped_tensor, tensor, backend_for
 from ..backend import choose_backend, NUMPY, Backend, get_precision
-from ..backend._dtype import DType
+from ..backend._dtype import DType, INT64
 
 
 def sparse_tensor(indices: Optional[Tensor],
@@ -1443,7 +1443,7 @@ def matrix_rank(matrix: Tensor) -> Tensor:
                 rank = estimate_rank(aslinearoperator(scipy_matrix), eps)
                 return np.array(rank, dtype=np.int64)
             nat_mat = native_matrix(matrix, matrix.default_backend)
-            scipy_result = matrix.default_backend.numpy_call(scipy_determine_rank, (), DType(int, 64), nat_mat)
+            scipy_result = matrix.default_backend.numpy_call(scipy_determine_rank, (), INT64, nat_mat)
             return wrap(scipy_result)
         from phiml.math._ops import broadcast_op
         return broadcast_op(single_sparse_rank, [matrix], batch(matrix))

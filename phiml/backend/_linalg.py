@@ -10,7 +10,7 @@ from scipy.sparse import issparse, coo_matrix
 from scipy.sparse.linalg import spsolve, LinearOperator
 
 from ._backend import Backend, SolveResult, List, DType, spatial_derivative_evaluation, combined_dim, choose_backend, TensorType, Preconditioner, ML_LOGGER, convert, disassemble_dataclass
-from ._dtype import to_numpy_dtype, combine_types
+from ._dtype import to_numpy_dtype, combine_types, INT32, BOOL
 from ._numpy_backend import NUMPY
 
 
@@ -65,8 +65,8 @@ def cg(b: Backend, lin, y, x0, rtol, atol, max_iter, pre: Optional[Preconditione
     delta0 = b.sum(residual * dx, -1, keepdims=True)
     delta0_tol = b.sum(residual_tol * dx_tol, -1, keepdims=True)
     check_progress = stop_on_l2(b, abs(delta0_tol), rtol, atol, max_iter)
-    iterations = b.zeros([batch_size], DType(int, 32))
-    function_evaluations = b.ones([batch_size], DType(int, 32))
+    iterations = b.zeros([batch_size], INT32)
+    function_evaluations = b.ones([batch_size], INT32)
     continue_, converged, diverged = check_progress(iterations, delta0)
 
     def cg_loop_body(continue_, x, dx, delta, residual, iterations, function_evaluations, _converged, _diverged):
@@ -103,8 +103,8 @@ def cg_adaptive(b, lin, y, x0, rtol, atol, max_iter, pre: Optional[Preconditione
     x = x0
     dx = residual = y - linear(b, lin, x, matrix_offset)
     dy = linear(b, lin, dx, matrix_offset)
-    iterations = b.zeros([batch_size], DType(int, 32))
-    function_evaluations = b.ones([batch_size], DType(int, 32))
+    iterations = b.zeros([batch_size], INT32)
+    function_evaluations = b.ones([batch_size], INT32)
     residual_squared = b.sum(residual ** 2, -1, keepdims=True)
     check_progress = stop_on_l2(b, b.sum(y ** 2, -1), rtol, atol, max_iter)
     continue_, converged, diverged = check_progress(iterations, residual_squared)
@@ -142,8 +142,8 @@ def bicg(b: Backend, lin, y, x0, rtol, atol, max_iter, pre: Optional[Preconditio
     x = b.copy(b.to_float(x0), only_mutable=True)
     batch_size = b.staticshape(y)[0]
     r0_tild = residual = y - linear(b, lin, x, matrix_offset)
-    iterations = b.zeros([batch_size], DType(int, 32))
-    function_evaluations = b.ones([batch_size], DType(int, 32))
+    iterations = b.zeros([batch_size], INT32)
+    function_evaluations = b.ones([batch_size], INT32)
     residual_squared = b.sum(residual ** 2, -1, keepdims=True)
     check_progress = stop_on_l2(b, b.sum(y ** 2, -1), rtol, atol, max_iter)
     continue_, converged, diverged = check_progress(iterations, residual_squared)
@@ -235,8 +235,8 @@ def bicg_stab_first_order(b: Backend, lin, y, x0, rtol, atol, max_iter, pre: Opt
     batch_size = b.staticshape(y)[0]
     residual = y - b.linear(lin, x)
     r0_h = b.ones(x0.shape)
-    iterations = b.zeros([batch_size], DType(int, 32))
-    function_evaluations = b.ones([batch_size], DType(int, 32))
+    iterations = b.zeros([batch_size], INT32)
+    function_evaluations = b.ones([batch_size], INT32)
     residual_squared = b.sum(residual ** 2, -1, keepdims=True)
     check_progress = stop_on_l2(b, b.sum(y ** 2, -1), rtol, atol, max_iter)
     continue_, converged, diverged = check_progress(iterations, residual_squared)
@@ -336,8 +336,8 @@ def scipy_sparse_solve(b: Backend, method: Union[str, Callable], lin, y, x0, rto
             npr = scipy_iterative_sparse_solve(NUMPY, lin, np_y, np_x0, np_rtol, np_atol, max_iter, np_pre, function)
             return npr.x, npr.residual, npr.iterations, npr.function_evaluations, npr.converged, npr.diverged
     fp = b.float_type
-    i = DType(int, 32)
-    bo = DType(bool)
+    i = INT32
+    bo = BOOL
     rsd_shape = list(x0.shape)
     if was_row_added:
         rsd_shape[1] += 1

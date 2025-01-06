@@ -13,8 +13,7 @@ import numpy
 import numpy as np
 from numpy import ndarray
 
-from ._dtype import DType, combine_types
-
+from ._dtype import DType, combine_types, INT32, INT64
 
 TensorType = TypeVar('TensorType')
 TensorOrArray = Union[TensorType, np.ndarray]
@@ -187,7 +186,7 @@ class Backend:
         dtypes = [self.dtype(t) for t in tensors]
         result_type = self.combine_types(*dtypes)
         if result_type.kind == bool and bool_to_int:
-            result_type = DType(int, 32)
+            result_type = INT32
         if result_type.kind == int and int_to_float:
             result_type = DType(float, self.precision)
         if result_type.kind in (int, float, complex, bool):  # do not cast everything to string!
@@ -627,7 +626,7 @@ class Backend:
     def mean(self, value, axis=None, keepdims=False):
         raise NotImplementedError(self)
 
-    def range(self, start, limit=None, delta=1, dtype: DType = DType(int, 32)):
+    def range(self, start, limit=None, delta=1, dtype: DType = INT32):
         raise NotImplementedError(self)
 
     def zeros(self, shape, dtype: DType = None):
@@ -848,10 +847,10 @@ class Backend:
         return self.cast(x, self.float_type)
 
     def to_int32(self, x):
-        return self.cast(x, DType(int, 32))
+        return self.cast(x, INT32)
 
     def to_int64(self, x):
-        return self.cast(x, DType(int, 64))
+        return self.cast(x, INT64)
 
     def to_complex(self, x):
         return self.cast(x, DType(complex, max(64, self.precision * 2)))
@@ -1090,7 +1089,7 @@ class Backend:
     def sort(self, x, axis=-1):
         raise NotImplementedError(self)
 
-    def searchsorted(self, sorted_sequence, search_values, side: str, dtype=DType(int, 32)):
+    def searchsorted(self, sorted_sequence, search_values, side: str, dtype=INT32):
         raise NotImplementedError(self)
 
     def fft(self, x, axes: Union[tuple, list]):
