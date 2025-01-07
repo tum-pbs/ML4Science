@@ -1063,7 +1063,10 @@ class Layout(Tensor):
 
     def __replace_dims__(self, dims: Tuple[str, ...], new_dims: Shape, **kwargs) -> 'Tensor':
         new_stack_dim = self._stack_dim.replace(dims, new_dims)
-        return Layout(self._obj, new_stack_dim)
+        def inner_replace(obj):
+            return rename_dims(obj, dims, new_dims, **kwargs)
+        obj = self._recursive_op1(self._obj, self._stack_dim, inner_replace)
+        return Layout(obj, new_stack_dim)
 
     def __pack_dims__(self, dims: Shape, packed_dim: Shape, pos: Union[int, None], **kwargs) -> 'Layout':
         if dims.names == self._stack_dim.names:
