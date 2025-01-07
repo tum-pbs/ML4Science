@@ -600,6 +600,13 @@ class BoundDim:
         else:
             return iter([self.obj])
 
+    def items(self):
+        keys = self.item_names
+        if keys is None:
+            keys = range(self.size)
+        values = self.unstack()
+        return {k: v for k, v in zip(keys, values)}.items()
+
     def __call__(self, *args, **kwargs):
         raise TypeError(f"Method {type(self.obj).__name__}.{self.name}() does not exist.")
 
