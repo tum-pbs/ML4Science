@@ -1886,7 +1886,7 @@ def broadcastable_native_tensors(*tensors) -> Tuple[Sequence[str], Shape, Sequen
         tensors = [dense(t) for t in tensors]
     var_names = tuple(set.union(*[set(variable_dim_names(t)) for t in tensors]))
     natives = [t._transposed_native(var_names, False) if t.rank > 0 else t.native(None, False) for t in tensors]
-    broadcast_shape = merge_shapes(tensors)
+    broadcast_shape = merge_shapes(*tensors)
     return var_names, broadcast_shape, natives
 
 

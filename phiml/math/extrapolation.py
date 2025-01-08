@@ -666,7 +666,7 @@ class _PeriodicExtrapolation(_CopyExtrapolation):
         return False
 
     def transform_coordinates(self, coordinates: Tensor, shape: Shape, **kwargs) -> Tensor:
-        return coordinates % shape.spatial
+        return coordinates % wrap(shape.spatial, channel(coordinates))[coordinates.vector.item_name_list]
 
     def pad_values(self, value: Tensor, width: int, dim: str, upper_edge: bool, already_padded: Optional[dict] = None, **kwargs) -> Tensor:
         if upper_edge:
