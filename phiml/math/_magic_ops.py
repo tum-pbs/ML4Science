@@ -71,8 +71,8 @@ def unstack(value, dim: DimFilter) -> tuple:
     """
     Un-stacks a `Sliceable` along one or multiple dimensions.
 
-    If multiple dimensions are given, the order of elements will be according to the dimension order in `dim`, i.e. elements along the last dimension will be neighbors in the returned `tuple`.
-    If no dimension is given or none of the given dimensions exists on `value`, returns a list containing only `value`.
+    If multiple dims are given, the order of elements will be according to the dimension order in `dim`, i.e. elements along the last dimension will be neighbors in the returned `tuple`.
+    If no dimension is given or none of the given dims exists on `value`, returns a list containing only `value`.
 
     See Also:
         `phiml.math.slice`.
@@ -118,14 +118,14 @@ def _any_uniform_dim(dims: Shape):
     for dim in dims:
         if dim.is_uniform:
             return dim
-    raise ValueError(f"Uniform dimension required but found only non-uniform dimensions {dims}")
+    raise ValueError(f"Uniform dimension required but found only non-uniform dims {dims}")
 
 
 def stack(values: Union[Sequence[PhiTreeNodeType], Dict[str, PhiTreeNodeType]], dim: Union[Shape, str], expand_values=False, simplify=False, layout_non_matching=False, **kwargs) -> PhiTreeNodeType:
     """
     Stacks `values` along the new dimension `dim`.
     All values must have the same spatial, instance and channel dimensions. If the dimension sizes vary, the resulting tensor will be non-uniform.
-    Batch dimensions will be added as needed.
+    Batch dims will be added as needed.
 
     Stacking tensors is performed lazily, i.e. the memory is allocated only when needed.
     This makes repeated stacking and slicing along the same dimension very efficient, i.e. jit-compiled functions will not perform these operations.
@@ -133,18 +133,18 @@ def stack(values: Union[Sequence[PhiTreeNodeType], Dict[str, PhiTreeNodeType]], 
     Args:
         values: Collection of `phiml.math.magic.Shapable`, such as `phiml.math.Tensor`
             If a `dict`, keys must be of type `str` and are used as item names along `dim`.
-        dim: `Shape` with a least one dimension. None of these dimensions can be present with any of the `values`.
+        dim: `Shape` with a least one dimension. None of these dims can be present with any of the `values`.
             If `dim` is a single-dimension shape, its size is determined from `len(values)` and can be left undefined (`None`).
             If `dim` is a multi-dimension shape, its volume must be equal to `len(values)`.
-        expand_values: If `True`, will first add missing dimensions to all values, not just batch dimensions.
-            This allows tensors with different dimensions to be stacked.
-            The resulting tensor will have all dimensions that are present in `values`.
+        expand_values: If `True`, will first add missing dims to all values, not just batch dimensions.
+            This allows tensors with different dims to be stacked.
+            The resulting tensor will have all dims that are present in `values`.
             If `False`, this may return a non-numeric object instead.
         simplify: If `True` and all values are equal, returns one value without adding the dimension.
         layout_non_matching: If non-matching values should be stacked using a Layout object, i.e. should be put into a named list instead.
         **kwargs: Additional keyword arguments required by specific implementations.
-            Adding spatial dimensions to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
-            Adding batch dimensions must always work without keyword arguments.
+            Adding spatial dims to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
+            Adding batch dims must always work without keyword arguments.
 
     Returns:
         `Tensor` containing `values` stacked along `dim`.
@@ -186,7 +186,7 @@ def stack(values: Union[Sequence[PhiTreeNodeType], Dict[str, PhiTreeNodeType]], 
                     return layout(values, dim)
                 else:
                     raise ValueError(f"Non-batch dims must match but got: {v0_dims} and {s.non_batch.names}. Manually expand tensors or set expand_values=True")
-    # --- Add missing dimensions ---
+    # --- Add missing dims ---
     if expand_values:
         all_dims = merge_shapes(*shapes, allow_varying_sizes=True)
         if isinstance(values, dict):
@@ -247,7 +247,7 @@ def stack(values: Union[Sequence[PhiTreeNodeType], Dict[str, PhiTreeNodeType]], 
             if not hasattr(v, '__stack__') and hasattr(v, '__concat__') and hasattr(v, '__expand__'):
                 expanded_values = tuple([expand(v, dim.with_size(1 if dim.item_names[0] is None else dim.item_names[0][i]), **kwargs) for i, v in enumerate(values)])
                 if len(expanded_values) > 8:
-                    warnings.warn(f"stack() default implementation is slow on large dimensions ({dim.name}={len(expanded_values)}). Please implement __stack__()", RuntimeWarning, stacklevel=2)
+                    warnings.warn(f"stack() default implementation is slow on large dims ({dim.name}={len(expanded_values)}). Please implement __stack__()", RuntimeWarning, stacklevel=2)
                 result = v.__concat__(expanded_values, dim.name, **kwargs)
                 if result is not NotImplemented:
                     assert isinstance(result, Shapable), "__concat__ must return a Shapable object"
@@ -286,21 +286,21 @@ def stack(values: Union[Sequence[PhiTreeNodeType], Dict[str, PhiTreeNodeType]], 
 def concat(values: Sequence[PhiTreeNodeType], dim: Union[str, Shape], expand_values=False, **kwargs) -> PhiTreeNodeType:
     """
     Concatenates a sequence of `phiml.math.magic.Shapable` objects, e.g. `Tensor`, along one dimension.
-    All values must have the same spatial, instance and channel dimensions and their sizes must be equal, except for `dim`.
-    Batch dimensions will be added as needed.
+    All values must have the same spatial, instance and channel dims and their sizes must be equal, except for `dim`.
+    Batch dims will be added as needed.
 
     Args:
         values: Tuple or list of `phiml.math.magic.Shapable`, such as `phiml.math.Tensor`
         dim: Concatenation dimension, must be present in all `values`.
             The size along `dim` is determined from `values` and can be set to undefined (`None`).
             Alternatively, a `str` of the form `'t->name:t'` can be specified, where `t` is on of `b d i s c` denoting the dimension type.
-            This first packs all dimensions of the input into a new dim with given name and type, then concatenates the values along this dim.
-        expand_values: If `True`, will first add missing dimensions to all values, not just batch dimensions.
-            This allows tensors with different dimensions to be concatenated.
-            The resulting tensor will have all dimensions that are present in `values`.
+            This first packs all dims of the input into a new dim with given name and type, then concatenates the values along this dim.
+        expand_values: If `True`, will first add missing dims to all values, not just batch dimensions.
+            This allows tensors with different dims to be concatenated.
+            The resulting tensor will have all dims that are present in `values`.
         **kwargs: Additional keyword arguments required by specific implementations.
-            Adding spatial dimensions to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
-            Adding batch dimensions must always work without keyword arguments.
+            Adding spatial dims to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
+            Adding batch dims must always work without keyword arguments.
 
     Returns:
         Concatenated `Tensor`
@@ -333,7 +333,7 @@ def concat(values: Sequence[PhiTreeNodeType], dim: Union[str, Shape], expand_val
         for v in values:
             assert dim in shape(v), f"concat dim '{dim}' must be present in the shapes of all values bot got value {type(v).__name__} with shape {shape(v)}"
         for v in values[1:]:
-            assert set(non_batch(v).names) == set(non_batch(values[0]).names), f"Concatenated values must have the same non-batch dimensions but got {non_batch(values[0])} and {non_batch(v)}"
+            assert set(non_batch(v).names) == set(non_batch(values[0]).names), f"Concatenated values must have the same non-batch dims but got {non_batch(values[0])} and {non_batch(v)}"
         all_batch_dims = merge_shapes(*[shape(v).batch.without(dim) for v in values])
         values = [expand(v, all_batch_dims) for v in values]
     # --- First try __concat__ ---
@@ -362,7 +362,7 @@ def concat(values: Sequence[PhiTreeNodeType], dim: Union[str, Shape], expand_val
     except MagicNotImplemented:
         raise MagicNotImplemented(f"concat: No value implemented __concat__ and not all values were Sliceable along {dim}. values = {[type(v) for v in values]}")
     if len(unstacked) > 8:
-        warnings.warn(f"concat() default implementation is slow on large dimensions ({dim}={len(unstacked)}). Please implement __concat__()", RuntimeWarning, stacklevel=2)
+        warnings.warn(f"concat() default implementation is slow on large dims ({dim}={len(unstacked)}). Please implement __concat__()", RuntimeWarning, stacklevel=2)
     dim = shape(values[0])[dim].with_size(None)
     try:
         return stack(unstacked, dim, **kwargs)
@@ -378,9 +378,9 @@ def ncat(values: Sequence[PhiTreeNodeType], dim: Shape, expand_values=False) -> 
         values: Each value can contain multiple components of `dim` if `dim` is present in its shape.
             Else, it is interpreted as a single component whose name will be determined from the leftover item names of `dim`.
         dim: Single dimension that has item names matching components of `values`.
-        expand_values: If `True`, will add all missing dimensions to values, not just batch dimensions.
-            This allows tensors with different dimensions to be concatenated.
-            The resulting tensor will have all dimensions that are present in `values`.
+        expand_values: If `True`, will add all missing dims to values, not just batch dimensions.
+            This allows tensors with different dims to be concatenated.
+            The resulting tensor will have all dims that are present in `values`.
             If `False`, this may return a non-numeric object instead.
 
     Returns:
@@ -407,7 +407,7 @@ def ncat(values: Sequence[PhiTreeNodeType], dim: Shape, expand_values=False) -> 
 def tcat(values: Sequence[PhiTreeNodeType], dim_type: Callable, expand_values=False, default_name='tcat') -> PhiTreeNodeType:
     """
     Concatenate values by dim type.
-    This function first packs all dimensions of `dim_type` into one dim, then concatenates all `values`.
+    This function first packs all dims of `dim_type` into one dim, then concatenates all `values`.
     Values that do not have a dim of `dim_type` are considered a size-1 slice.
 
     The name of the first matching dim of `dim_type` is used as the concatenated output dim name.
@@ -450,7 +450,7 @@ scat.__doc__ = "Concatenate values along their spatial dim, see `tcat`."
 
 def expand(value, *dims: Union[Shape, str], **kwargs):
     """
-    Adds dimensions to a `Tensor` or tensor-like object by implicitly repeating the tensor values along the new dimensions.
+    Adds dims to a `Tensor` or tensor-like object by implicitly repeating the tensor values along the new dimensions.
     If `value` already contains any of the new dimensions, a size and type check is performed for these instead.
 
     If any of `dims` varies along a dimension that is present neither in `value` nor on `dims`, it will also be added to `value`.
@@ -468,8 +468,8 @@ def expand(value, *dims: Union[Shape, str], **kwargs):
             For tree nodes, expands all value attributes by `dims` or the first variable attribute if no value attributes are set.
         *dims: Dimensions to be added as `Shape`
         **kwargs: Additional keyword arguments required by specific implementations.
-            Adding spatial dimensions to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
-            Adding batch dimensions must always work without keyword arguments.
+            Adding spatial dims to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
+            Adding batch dims must always work without keyword arguments.
 
     Returns:
         Same type as `value`.
@@ -530,13 +530,13 @@ def rename_dims(value: PhiTreeNodeType,
                 names: DimFilter,
                 **kwargs) -> PhiTreeNodeType:
     """
-    Change the name and optionally the type of some dimensions of `value`.
+    Change the name and optionally the type of some dims of `value`.
 
-    Dimensions that are not present on value will be ignored. The corresponding new dimensions given by `names` will not be added.
+    Dimensions that are not present on value will be ignored. The corresponding new dims given by `names` will not be added.
 
     Args:
         value: `Shape` or `Tensor` or `Shapable`.
-        dims: Existing dimensions of `value` as comma-separated `str`, `tuple`, `list`, `Shape` or filter function.
+        dims: Existing dims of `value` as comma-separated `str`, `tuple`, `list`, `Shape` or filter function.
         names: Either
 
             * Sequence of names matching `dims` as `tuple`, `list` or `str`. This replaces only the dimension names but leaves the types untouched.
@@ -544,8 +544,8 @@ def rename_dims(value: PhiTreeNodeType,
             * Dimension type function to replace only types.
 
         **kwargs: Additional keyword arguments required by specific implementations.
-            Adding spatial dimensions to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
-            Adding batch dimensions must always work without keyword arguments.
+            Adding spatial dims to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
+            Adding batch dims must always work without keyword arguments.
 
     Returns:
         Same type as `value`.
@@ -570,7 +570,7 @@ def rename_dims(value: PhiTreeNodeType,
         return tree_map(rename_dims, value, all_attributes, treat_layout_as_leaf=True, dims=old_dims, names=new_dims, **kwargs)
     # --- Fallback: unstack and stack ---
     if shape(value).only(old_dims).volume > 8:
-        warnings.warn(f"rename_dims() default implementation is slow on large dimensions ({old_dims}). Please implement __replace_dims__() for {type(value).__name__} as defined in phiml.math.magic", RuntimeWarning, stacklevel=2)
+        warnings.warn(f"rename_dims() default implementation is slow on large dims ({old_dims}). Please implement __replace_dims__() for {type(value).__name__} as defined in phiml.math.magic", RuntimeWarning, stacklevel=2)
     for old_name, new_dim in zip(old_dims.names, new_dims):
         value = stack(unstack(value, old_name), new_dim, **kwargs)
     return value
@@ -617,27 +617,27 @@ def _shape_replace(shape: Shape, dims: DimFilter, new: DimFilter) -> Tuple[Shape
 
 
 def b2i(value: PhiTreeNodeType) -> PhiTreeNodeType:
-    """ Change the type of all *batch* dimensions of `value` to *instance* dimensions. See `rename_dims`. """
+    """ Change the type of all *batch* dims of `value` to *instance* dimensions. See `rename_dims`. """
     return rename_dims(value, batch, instance)
 
 
 def c2b(value: PhiTreeNodeType) -> PhiTreeNodeType:
-    """ Change the type of all *channel* dimensions of `value` to *batch* dimensions. See `rename_dims`. """
+    """ Change the type of all *channel* dims of `value` to *batch* dimensions. See `rename_dims`. """
     return rename_dims(value, channel, batch)
 
 
 def s2b(value: PhiTreeNodeType) -> PhiTreeNodeType:
-    """ Change the type of all *spatial* dimensions of `value` to *batch* dimensions. See `rename_dims`. """
+    """ Change the type of all *spatial* dims of `value` to *batch* dimensions. See `rename_dims`. """
     return rename_dims(value, spatial, batch)
 
 
 def si2d(value: PhiTreeNodeType) -> PhiTreeNodeType:
-    """ Change the type of all *spatial* and *instance* dimensions of `value` to *dual* dimensions. See `rename_dims`. """
+    """ Change the type of all *spatial* and *instance* dims of `value` to *dual* dimensions. See `rename_dims`. """
     return rename_dims(value, lambda s: s.non_channel.non_dual.non_batch, dual)
 
 
 def c2d(value: PhiTreeNodeType) -> PhiTreeNodeType:
-    """ Change the type of all *channel* dimensions of `value` to *dual* dimensions. See `rename_dims`. """
+    """ Change the type of all *channel* dims of `value` to *dual* dimensions. See `rename_dims`. """
     return rename_dims(value, channel, dual)
 
 
@@ -647,24 +647,24 @@ def p2d(value: PhiTreeNodeType) -> PhiTreeNodeType:
 
 
 def i2b(value: PhiTreeNodeType) -> PhiTreeNodeType:
-    """ Change the type of all *instance* dimensions of `value` to *batch* dimensions. See `rename_dims`. """
+    """ Change the type of all *instance* dims of `value` to *batch* dimensions. See `rename_dims`. """
     return rename_dims(value, instance, batch)
 
 
 def d2i(value: PhiTreeNodeType) -> PhiTreeNodeType:
-    """ Change the type of all *dual* dimensions of `value` to *instance* dimensions. See `rename_dims`. """
+    """ Change the type of all *dual* dims of `value` to *instance* dimensions. See `rename_dims`. """
     return rename_dims(value, dual, instance)
 
 
 def d2s(value: PhiTreeNodeType) -> PhiTreeNodeType:
-    """ Change the type of all *dual* dimensions of `value` to *spatial* dimensions. See `rename_dims`. """
+    """ Change the type of all *dual* dims of `value` to *spatial* dimensions. See `rename_dims`. """
     return rename_dims(value, dual, spatial)
 
 
 def pack_dims(value, dims: DimFilter, packed_dim: Union[Shape, str], pos: Optional[int] = None, **kwargs):
     """
-    Compresses multiple dimensions into a single dimension by concatenating the elements.
-    Elements along the new dimensions are laid out according to the order of `dims`.
+    Compresses multiple dims into a single dimension by concatenating the elements.
+    Elements along the new dims are laid out according to the order of `dims`.
     If the order of `dims` differs from the current dimension order, the tensor is transposed accordingly.
     This function replaces the traditional `reshape` for these cases.
 
@@ -682,8 +682,8 @@ def pack_dims(value, dims: DimFilter, packed_dim: Union[Shape, str], pos: Option
         packed_dim: Single-dimension `Shape`.
         pos: Index of new dimension. `None` for automatic, `-1` for last, `0` for first.
         **kwargs: Additional keyword arguments required by specific implementations.
-            Adding spatial dimensions to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
-            Adding batch dimensions must always work without keyword arguments.
+            Adding spatial dims to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
+            Adding batch dims must always work without keyword arguments.
 
     Returns:
         Same type as `value`.
@@ -716,7 +716,7 @@ def pack_dims(value, dims: DimFilter, packed_dim: Union[Shape, str], pos: Option
         return tree_map(pack_dims, value, attr_type=all_attributes, dims=dims, packed_dim=packed_dim, pos=pos, **kwargs)
     # --- Fallback: unstack and stack ---
     if shape(value).only(dims).volume > 8:
-        warnings.warn(f"pack_dims() default implementation is slow on large dimensions ({shape(value).only(dims)}). Please implement __pack_dims__() for {type(value).__name__} as defined in phiml.math.magic", RuntimeWarning, stacklevel=2)
+        warnings.warn(f"pack_dims() default implementation is slow on large dims ({shape(value).only(dims)}). Please implement __pack_dims__() for {type(value).__name__} as defined in phiml.math.magic", RuntimeWarning, stacklevel=2)
     return stack(unstack(value, dims), packed_dim, **kwargs)
 
 
@@ -754,12 +754,12 @@ def unpack_dim(value, dim: DimFilter, *unpacked_dims: Union[Shape, Sequence[Shap
     Args:
         value: `phiml.math.magic.Shapable`, such as `Tensor`, for which one dimension should be split.
         dim: Single dimension to be decompressed.
-        *unpacked_dims: Either vararg `Shape`, ordered dimensions to replace `dim`, fulfilling `unpacked_dims.volume == shape(self)[dim].rank`.
+        *unpacked_dims: Either vararg `Shape`, ordered dims to replace `dim`, fulfilling `unpacked_dims.volume == shape(self)[dim].rank`.
             This results in a single tensor output.
             Alternatively, pass a `tuple` or `list` of shapes to unpack a dim into multiple tensors whose combined volumes match `dim.size`.
         **kwargs: Additional keyword arguments required by specific implementations.
-            Adding spatial dimensions to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
-            Adding batch dimensions must always work without keyword arguments.
+            Adding spatial dims to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
+            Adding batch dims must always work without keyword arguments.
 
     Returns:
         Same type as `value`.
@@ -796,7 +796,7 @@ def unpack_dim(value, dim: DimFilter, *unpacked_dims: Union[Shape, Sequence[Shap
         return copy_with(value, **new_attributes)
     # --- Fallback: unstack and stack ---
     if shape(value).only(dim).volume > 8:
-        warnings.warn(f"pack_dims() default implementation is slow on large dimensions ({shape(value).only(dim)}). Please implement __unpack_dim__() for {type(value).__name__} as defined in phiml.math.magic", RuntimeWarning, stacklevel=2)
+        warnings.warn(f"pack_dims() default implementation is slow on large dims ({shape(value).only(dim)}). Please implement __unpack_dim__() for {type(value).__name__} as defined in phiml.math.magic", RuntimeWarning, stacklevel=2)
     unstacked = unstack(value, dim)
     for dim in reversed(unpacked_dims):
         unstacked = [stack(unstacked[i:i+dim.size], dim, **kwargs) for i in range(0, len(unstacked), dim.size)]
@@ -812,11 +812,11 @@ def flatten(value, flat_dim: Shape = instance('flat'), flatten_batch=False, **kw
         value: `phiml.math.magic.Shapable`, such as `Tensor`.
             If a non-`phiml.math.magic.Shaped` object or one with an empty `Shape` is passed, it is returned without alteration.
         flat_dim: Dimension name and type as `Shape` object. The size is ignored.
-        flatten_batch: Whether to flatten batch dimensions as well.
-            If `False`, batch dimensions are kept, only onn-batch dimensions are flattened.
+        flatten_batch: Whether to flatten batch dims as well.
+            If `False`, batch dims are kept, only onn-batch dims are flattened.
         **kwargs: Additional keyword arguments required by specific implementations.
-            Adding spatial dimensions to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
-            Adding batch dimensions must always work without keyword arguments.
+            Adding spatial dims to fields requires the `bounds: Box` argument specifying the physical extent of the new dimensions.
+            Adding batch dims must always work without keyword arguments.
 
     Returns:
         Same type as `value`.
