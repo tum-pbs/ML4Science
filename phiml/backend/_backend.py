@@ -186,7 +186,7 @@ class Backend:
             tensors cast to a common data type
         """
         dtypes = [self.dtype(t) for t in tensors]
-        result_type = self.combine_types(*dtypes)
+        result_type = combine_types(*dtypes, fp_precision=get_precision())
         if result_type.kind == bool and bool_to_int:
             result_type = INT32
         if result_type.kind == int and int_to_float:

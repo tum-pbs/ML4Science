@@ -1387,17 +1387,25 @@ class Dense(Tensor):
             return NotImplemented
         if not isinstance(other, Dense):
             other = Dense(other.native(other.shape), other.shape.names, other.shape, self._backend)
-        backend_op = get_operator(op, backend_for(self, other))
+        backend = backend_for(self, other)
+        backend_op = get_operator(op, backend)
         if backend_op is None:
             return op(self, other) if switch_args else op(other, self)
-        first_names = [n for n in self._names if n not in other._names]
-        names = first_names + list(other._names)
-        nat1 = self._transposed_native(names, False)
-        nat2 = other._native
-        if switch_args:
-            nat1, nat2 = nat2, nat1
-        result_nat = backend_op(nat1, nat2)
-        return Dense(result_nat, names, self._shape & other._shape, backend_for(self, other))
+        if other._names == self._names:
+            nat1, nat2 = self._native, other._native
+            names = self._names
+            if other._shape == self._shape:
+                r_shape = self._shape
+            else:
+                r_shape = self._shape & other._shape
+        else:
+            first_names = [n for n in self._names if n not in other._names]
+            names = first_names + list(other._names)
+            nat1 = self._transposed_native(names, False)
+            nat2 = other._native
+            r_shape = self._shape & other._shape
+        result_nat = backend_op(nat2, nat1) if switch_args else backend_op(nat1, nat2)
+        return Dense(result_nat, names, r_shape, backend)
 
     def _natives(self) -> tuple:
         return self._native,

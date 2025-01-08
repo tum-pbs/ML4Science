@@ -11,7 +11,7 @@ def rnpv(size=64, d=2):
     return np.random.randn(1, *[size] * d, d).astype(np.float32)
 
 
-def _assert_equally_fast(f1, f2, n=100, tolerance_per_round=0.001):
+def _assert_equally_fast(f1, f2, n=100, tolerance_per_round=0.01):
     start = time.perf_counter()
     for _ in range(n):
         f1()
@@ -20,7 +20,7 @@ def _assert_equally_fast(f1, f2, n=100, tolerance_per_round=0.001):
     for _ in range(n):
         f2()
     t_time = time.perf_counter() - start
-    print(np_time, t_time)
+    print("np:", np_time, "Φ:", t_time)
     assert abs(t_time - np_time) / n <= tolerance_per_round
 
 

@@ -1,3 +1,4 @@
+from functools import lru_cache
 from typing import Union
 
 import numpy as np
@@ -49,6 +50,7 @@ class DType:
         """ Python class corresponding to the type of data, ignoring precision. One of (bool, int, float, complex, str) """
         self.bits = bits
         """ Number of bits used to store a single value of this type. See `DType.itemsize`. """
+        self._hash = hash(self.kind) + hash(self.bits)
 
     @property
     def precision(self):
@@ -78,7 +80,7 @@ class DType:
         return not self == other
 
     def __hash__(self):
-        return hash(self.kind) + hash(self.bits)
+        return self._hash
 
     def __repr__(self):
         return f"{self.kind.__name__}{self.bits}"
@@ -159,6 +161,7 @@ _FROM_NUMPY[np.bool_] = BOOL
 _FROM_NUMPY[bool] = BOOL
 
 
+@lru_cache
 def combine_types(*dtypes: DType, fp_precision: int = None) -> DType:
     # all bool?
     if all(dt.kind == bool for dt in dtypes):
