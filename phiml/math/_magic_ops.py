@@ -7,7 +7,7 @@ from typing import TypeVar, Tuple, Dict, Union, Optional, Sequence, Any, Callabl
 
 from . import channel, EMPTY_SHAPE
 from ._shape import Shape, DimFilter, batch, instance, shape, non_batch, merge_shapes, concat_shapes, spatial, parse_dim_order, dual, auto, parse_shape_spec, DIM_FUNCTIONS, \
-    INV_CHAR, concat_shapes_, Dim, DEBUG_CHECKS, SHAPE_TYPES
+    INV_CHAR, concat_shapes_, Dim, DEBUG_CHECKS, SHAPE_TYPES, primal
 from .magic import Sliceable, Shaped, Shapable, PhiTreeNode
 from ..backend import choose_backend, NoBackendFound
 from ..backend._dtype import DType
@@ -639,6 +639,11 @@ def si2d(value: PhiTreeNodeType) -> PhiTreeNodeType:
 def c2d(value: PhiTreeNodeType) -> PhiTreeNodeType:
     """ Change the type of all *channel* dimensions of `value` to *dual* dimensions. See `rename_dims`. """
     return rename_dims(value, channel, dual)
+
+
+def p2d(value: PhiTreeNodeType) -> PhiTreeNodeType:
+    """ Change the type of all *primal* dims (instance, spatial, channel) of `value` to *dual* dimensions. See `rename_dims`. """
+    return rename_dims(value, primal, dual)
 
 
 def i2b(value: PhiTreeNodeType) -> PhiTreeNodeType:
