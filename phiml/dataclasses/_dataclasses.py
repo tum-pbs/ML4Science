@@ -39,6 +39,8 @@ def sliceable(cls=None, /, *, dim_attrs=True, keepdims=None, dim_repr=True):
                     raise AttributeError(f"'{type(obj)}' instance has no attribute '{name}'")
                 if name in shape(obj):
                     return BoundDim(obj, name)
+                elif hasattr(type(obj), name):
+                    raise RuntimeError(f"Evaluation of property '{type(obj).__name__}.{name}' failed.")
                 else:
                     raise AttributeError(f"'{type(obj)}' instance has no attribute '{name}'")
             cls.__getattr__ = __dataclass_getattr__
