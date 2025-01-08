@@ -327,10 +327,8 @@ class TestTensors(TestCase):
     def test_flip_item_names(self):
         t = math.zeros(spatial(x=4, y=3), channel(vector='x,y'))
         self.assertEqual(('x', 'y'), t.vector.item_names)
-        t_ = t.vector[::-1]
-        self.assertEqual(('y', 'x'), t_.vector.item_names)
-        t_ = t.vector[::-1]
-        self.assertEqual(('y', 'x'), t_.vector.item_names)
+        self.assertEqual(('x', 'y'), t.vector[::-1].vector.item_names)
+        self.assertEqual(('y', 'x'), t.vector[1::-1].vector.item_names)
 
     def test_op2_incompatible_item_names(self):
         t1 = math.random_normal(channel(vector='x,y,z'))

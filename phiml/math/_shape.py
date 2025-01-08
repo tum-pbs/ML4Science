@@ -2870,19 +2870,14 @@ def after_gather(self, selection: dict) -> 'Shape':
             new_size = math.to_int64(math.ceil(math.wrap((stop - start) / step)))
             if new_size.rank == 0:
                 new_size = int(new_size)  # NumPy array not allowed because not hashable
-            result = result.with_dim_size(sel_dim, new_size, keep_item_names=True)
-            if step < 0:
-                result = result.flipped([sel_dim])  # ToDo only occurrence
-
-                # item_names = list(self.item_names)
-                # for dim in dims:
-                #     if dim in self.names:
-                #         dim_i_n = self.get_item_names(dim)
-                #         if dim_i_n is not None:
-                #             item_names[self.index(dim)] = tuple(reversed(dim_i_n))
-
-            if self.get_item_names(sel_dim) is not None:
-                result = result.with_dim_size(sel_dim, tuple(self.get_item_names(sel_dim)[sel]))
+            keep_item_names = step == -1 and sel.stop is None and sel.start is None
+            #         result = result.flipped([sel_dim])
+            old_item_names = self.get_item_names(sel_dim)
+            if old_item_names is not None:
+                if not keep_item_names:
+                    result = result.with_dim_size(sel_dim, tuple(self.get_item_names(sel_dim)[sel]))
+            else:
+                result = result.with_dim_size(sel_dim, new_size, keep_item_names=True)
         elif isinstance(sel, (tuple, list)):
             if self.get_item_names(sel_dim) is not None:
                 result = result.with_dim_size(sel_dim, tuple([self.get_item_names(sel_dim)[i] for i in sel]))
