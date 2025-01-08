@@ -131,13 +131,13 @@ class TestOptimize(TestCase):
         for method in ['CG']:
             solve = Solve(method, 0, 1e-3, x0=x0, max_iterations=100)
             try:
-                math.solve_linear(math.jit_compile_linear(math.laplace), y, solve)
+                math.solve_linear(math.laplace, y, solve)
                 assert False
             except Diverged:
                 pass
             with math.SolveTape(record_trajectories=True) as solves:
                 try:
-                    math.solve_linear(math.jit_compile_linear(math.laplace), y, solve)  # impossible
+                    math.solve_linear(math.laplace, y, solve)  # impossible
                     assert False
                 except Diverged:
                     pass
