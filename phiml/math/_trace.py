@@ -370,7 +370,7 @@ class GatherLinTracer(Tensor):
     def _op2(self, other, op: Callable, switch_args: bool) -> 'Tensor':
         assert op in {operator.add, operator.sub, operator.mul, operator.truediv}, f"Unsupported operation '{op}' encountered while tracing linear function"
         if isinstance(other, ShiftLinTracer):
-            other = other._to_gather_tracer()
+            other = to_gather_tracer(other)
         if isinstance(other, GatherLinTracer):
             assert op in {operator.add, operator.sub}, f"Non-linear operation '{op}' cannot be converted to matrix"
             if not math.always_close(self._selection, other._selection):

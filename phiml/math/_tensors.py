@@ -438,6 +438,12 @@ class Tensor:
             elif isinstance(selection, Tensor) and selection.dtype.kind == int:
                 from ._ops import gather
                 sliced = gather(sliced, selection, dims=dim)
+            elif isinstance(selection, slice):
+                if selection.start in (0, None) and selection.stop is not None and isinstance(self.shape.get_size(dim), int) and selection.stop >= self.shape.get_size(dim):
+                    continue
+                if selection.start is not None and isinstance(self.shape.get_size(dim), int) and selection.start >= self.shape.get_size(dim) and (selection.step is None or selection.step > 0):
+                    return Dense(0, (), self.shape.after_gather(item), self.backend)
+                selections[dim] = selection
             else:
                 selections[dim] = selection
         return sliced._getitem(selections) if selections else sliced

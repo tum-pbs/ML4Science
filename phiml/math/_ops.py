@@ -3612,6 +3612,11 @@ def map_pairs(map_function: Callable, values: Tensor, connections: Tensor):
         `Tensor` with the sparse dimensions of `connections` and all non-instance dimensions returned by `map_function`.
     """
     assert dual(values).is_empty, f"values must not have a dual dimension but got {values.shape}"
+    if isinstance(connections, CompactSparseTensor):
+        rows = connections._uncompressed_dims if instance(connections._uncompressed_dims) else connections._compressed_dims
+        target = values[{rows: connections._indices}]
+        result = map_function(values, target)
+        return connections._with_values(result)
     indices = stored_indices(connections, invalid='clamp')
     origin_dim, neighbors_dim = channel(indices).item_names[0]
     if origin_dim not in values.shape:

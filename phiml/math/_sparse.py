@@ -99,12 +99,12 @@ def tensor_like(existing_tensor: Tensor, values: Union[Tensor, Number, bool], va
         `Tensor`
     """
     assert value_order in ['original', 'as existing', None]
-    if isinstance(existing_tensor, (SparseCoordinateTensor, CompressedSparseMatrix)):
+    if isinstance(existing_tensor, (SparseCoordinateTensor, CompressedSparseMatrix, CompactSparseTensor)):
         if value_order is None:
             assert not instance(values), f"When creating a sparse tensor from a list of values, value_order must be specified."
         if instance(values):
             values = rename_dims(values, instance, instance(existing_tensor._values))
-        values = expand(values, instance(existing_tensor._values))
+        values = expand(values, existing_tensor._values.shape.only([instance, dual]) if isinstance(existing_tensor, CompactSparseTensor) else instance(existing_tensor._values))
         if value_order == 'original' and isinstance(existing_tensor, CompressedSparseMatrix) and existing_tensor._uncompressed_indices_perm is not None:
             values = values[existing_tensor._uncompressed_indices_perm]
         if isinstance(existing_tensor, CompressedSparseMatrix) and existing_tensor._uncompressed_offset is not None:
@@ -1162,7 +1162,7 @@ def to_format(x: Tensor, format: str):
     Returns:
         `Tensor` of the specified format.
     """
-    assert format in ('coo', 'csr', 'csc', 'dense', 'sparse'), f"Invalid format: '{format}'. Must be one of 'coo', 'csr', 'csc', 'dense'"
+    assert format in ('coo', 'csr', 'csc', 'dense', 'sparse', 'compact-rows', 'compact-cols'), f"Invalid format: '{format}'. Must be one of 'coo', 'csr', 'csc', 'dense'"
     if format == 'sparse':
         if is_sparse(x):
             return x
@@ -1177,9 +1177,17 @@ def to_format(x: Tensor, format: str):
             return x.compress_rows()
         elif format == 'csc':
             return x.compress_cols()
-    elif isinstance(x, CompressedSparseMatrix):
+        elif format == 'compact-cols':
+            x = x.compress_rows()
+        elif format == 'compact-rows':
+            x = x.compress_cols()
+    if isinstance(x, CompressedSparseMatrix):
         if format == 'coo':
             return x.decompress()
+        elif format == 'compact-cols' and get_format(x) == 'csr':
+            return compressed_to_compact(x)
+        elif format == 'compact-rows' and get_format(x) == 'csc':
+            return compressed_to_compact(x)
         else:
             return to_format(x.decompress(), format)
     elif isinstance(x, CompactSparseTensor):
@@ -1200,6 +1208,13 @@ def to_format(x: Tensor, format: str):
         values = x[indices]
         coo = SparseCoordinateTensor(indices, values, x.shape, can_contain_double_entries=False, indices_sorted=False, indices_constant=x.default_backend.name == 'numpy')
         return to_format(coo, format)
+
+
+def compressed_to_compact(x: CompressedSparseMatrix):
+    entries_per_row = instance(x._indices).size // x._compressed_dims.volume
+    indices = unpack_dim(x._indices, instance, x._compressed_dims, x._uncompressed_dims.with_size(entries_per_row))
+    values = unpack_dim(x._values, instance, x._compressed_dims, x._uncompressed_dims.with_size(entries_per_row))
+    return CompactSparseTensor(indices, values, x._uncompressed_dims, x._indices_constant, x._matrix_rank)
 
 
 def sparse_dims(x: Tensor) -> Shape:
