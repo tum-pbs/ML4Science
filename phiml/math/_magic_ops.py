@@ -564,6 +564,8 @@ def rename_dims(value: PhiTreeNodeType,
     old_dims, new_dims = _shape_replace(shape(value), dims, names)
     if not new_dims:
         return value
+    if new_dims.names == old_dims.names and new_dims == old_dims:
+        return value
     # --- First try __replace_dims__ ---
     if hasattr(value, '__replace_dims__'):
         result = value.__replace_dims__(old_dims.names, new_dims, **kwargs)
@@ -590,6 +592,7 @@ def _shape_replace(shape: Shape, dims: DimFilter, new: DimFilter) -> Tuple[Shape
         existing = shape.only(dims, reorder=True)
     if not existing:
         return EMPTY_SHAPE, EMPTY_SHAPE
+    # --- Replace based on type(new) ---
     if isinstance(new, str) and new.startswith('(') and new.endswith(')'):
         item_names = [s.strip() for s in new[1:-1].split(',')]
         new = concat_shapes_(*[d.with_size(item_names) for d in existing])
@@ -612,6 +615,14 @@ def _shape_replace(shape: Shape, dims: DimFilter, new: DimFilter) -> Tuple[Shape
                 raise ValueError(f"Invalid item in names: {n}")
         new = concat_shapes_(*new_dims)
     elif isinstance(new, Shape):
+        if not callable(dims):
+            if isinstance(dims, Shape):
+                existing_idx = dims.indices(existing.names)
+            elif isinstance(dims, (tuple, list)):
+                existing_idx = [dims.index(n) for n in existing.names]
+            else:
+                raise NotImplementedError
+            new = new[existing_idx]
         if not new.well_defined:
             new = new.with_sizes(existing.sizes)
     else:

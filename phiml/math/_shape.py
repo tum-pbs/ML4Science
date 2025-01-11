@@ -859,6 +859,9 @@ class Dim:
     @property
     def singleton(self):
         return self if _size_equal(self.size, 1) else EMPTY_SHAPE
+    @property
+    def non_singleton(self):
+        return EMPTY_SHAPE if _size_equal(self.size, 1) else self
 
     @property
     def well_defined(self):
@@ -1279,6 +1282,10 @@ class PureShape:
     @property
     def singleton(self):
         dims = {n: dim for n, dim in self.dims.items() if _size_equal(dim.size, 1)}
+        return next(iter(dims.values())) if len(dims) == 1 else PureShape(self.dim_type, dims)
+    @property
+    def non_singleton(self):
+        dims = {n: dim for n, dim in self.dims.items() if not _size_equal(dim.size, 1)}
         return next(iter(dims.values())) if len(dims) == 1 else PureShape(self.dim_type, dims)
 
     @property
@@ -1715,6 +1722,10 @@ class MixedShape:
     @property
     def singleton(self):
         dims = {n: dim for n, dim in self.dims.items() if _size_equal(dim.size, 1)}
+        return next(iter(dims.values())) if len(dims) == 1 else merge_shapes(dims)
+    @property
+    def non_singleton(self):
+        dims = {n: dim for n, dim in self.dims.items() if not _size_equal(dim.size, 1)}
         return next(iter(dims.values())) if len(dims) == 1 else merge_shapes(dims)
 
     @property
