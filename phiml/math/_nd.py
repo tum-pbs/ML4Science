@@ -662,7 +662,7 @@ def spatial_gradient(grid: Tensor,
         grid = grid[{stack_dim.name: 0}]
     dims = grid.shape.only(dims)
     dx = wrap(dx)
-    if dx.vector.exists:
+    if 'vector' in dx.shape:
         dx = dx.vector[dims]
         if dx.vector.size in (None, 1):
             dx = dx.vector[0]
@@ -706,7 +706,7 @@ def laplace(x: Tensor,
     """
     if isinstance(dx, (tuple, list)):
         dx = wrap(dx, batch('_laplace'))
-    elif isinstance(dx, Tensor) and dx.vector.exists:
+    elif isinstance(dx, Tensor) and 'vector' in dx.shape:
         dx = rename_dims(dx, 'vector', batch('_laplace'))
     if isinstance(x, Extrapolation):
         return x.spatial_gradient()
